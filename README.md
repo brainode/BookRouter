@@ -1,9 +1,9 @@
-# ScanBookShelf
+# BookRouter
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![AI Assisted](https://img.shields.io/badge/AI-Assisted-0A7E8C)
 
-ScanBookShelf scans a folder of books, extracts text from supported formats, enriches metadata with AI and public catalog providers, and copies the books into a categorized output bookshelf.
+BookRouter scans a folder of books, extracts text from supported formats, enriches metadata with AI and public catalog providers, and copies the books into a categorized output bookshelf.
 
 ## Features
 
