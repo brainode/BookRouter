@@ -7,24 +7,23 @@ BookRouter scans a folder of books, extracts text from supported formats, enrich
 
 ## Features
 
-- Scans local folders for `pdf`, `djvu`, `djv`, `epub`, `fb2`, and ZIP-contained books.
-- Extracts text with OCR fallback for image-based documents.
+- Scans local folders for `pdf`, `djvu`, `djv`, `epub`, `fb2`, and ZIP-contained books; the format is detected by file signature, not extension.
+- Extracts text from the text layer (PDF, DjVu via `djvutxt`) and falls back to OCR for scans.
 - Enriches title, author, ISBN, and series using local heuristics plus OpenLibrary and Google Books.
-- Persists processing state in SQLite to avoid reprocessing the same sources.
-- Copies processed books into category-based folders.
+- Persists processing state in SQLite: finished books are skipped, failed ones are retried on the next run.
+- Detects duplicate files and copies each book into category-based folders only once.
+- Checks the environment (folders, Tesseract languages, DjVuLibre, Ollama model) before processing.
 
 ## Requirements
 
 - Python 3.11 or newer.
-- Tesseract OCR installed locally if OCR is enabled.
-- DjVuLibre tools in `PATH` if you process `djvu` or `djv` files.
-- A local Ollama model if you use the default `MODEL_NAME=gemma3:12b`.
+- Tesseract OCR installed locally if OCR is enabled, with every language from `LANGUAGES` (default `eng+rus`).
+- DjVuLibre tools `djvused`, `djvutxt` and `ddjvu` in `PATH` if you process `djvu` or `djv` files.
+- A running Ollama server with the model from `MODEL_NAME` (default `gemma3:12b`) pulled.
 
 The project imports these Python packages:
 
 - `beautifulsoup4`
-- `ebooklib`
-- `numpy`
 - `ollama`
 - `Pillow`
 - `PyMuPDF`
@@ -66,16 +65,35 @@ Important variables:
 - `OPENAI_API_KEY`: optional API key placeholder for integrations.
 - `INPUT_BOOKS_FOLDER`: source directory with books to scan.
 - `OUTPUT_BOOKS_FOLDER`: target directory for the organized bookshelf.
-- `TESSERACT_CMD`: full path to `tesseract.exe` when OCR is enabled.
+- `TESSERACT_CMD`: full path to `tesseract.exe` (the installation folder is also accepted).
+- `MODEL_NAME`: Ollama model. Thinking models (gemma4, qwen3, …) work with the default `LLM_THINK=false`; with thinking enabled, raise `LLM_NUM_PREDICT`.
+- `RETRY_ERRORS`: retry books that failed in previous runs (default `true`).
+
+All other tunables (page counts, OCR timeouts, LLM options, ZIP limits, logging) and their defaults are listed in `config.py`.
 
 The repository ships with `.env.example` as a template. Your actual `.env` is ignored by git.
 
 ## Usage
 
-Run the main pipeline:
+Try a sample first, then run the whole library:
 
 ```powershell
-python __main__.py
+python __main__.py --dry-run --limit 50     # nothing is copied, see results.dry-run.csv
+python __main__.py --limit 50               # real run on the first 50 books
+python __main__.py                          # everything
+```
+
+Other options: `--input` / `--output` override the folders from `.env`, `--only-ext pdf,djvu` limits formats, `--no-retry-errors` skips books that failed before. See `python __main__.py --help`.
+
+Ctrl+C stops after the current page; unfinished books are picked up on the next run. Press it twice to exit immediately.
+
+The run ends with a summary of statuses and the most frequent error reasons. Failed books are copied to `<OUTPUT>/Errors`, and every result is written to `results.csv` and `books.db`.
+
+Run the tests:
+
+```powershell
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
 Optional maintenance:

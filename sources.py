@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 
 from config import ARCHIVE_MAX_MEMBER_SIZE_MB, ARCHIVE_TEMP_ROOT, ARCHIVE_ZIP_ENABLED
 
-logger = logging.getLogger("scanbookshelf")
+logger = logging.getLogger("bookrouter")
 
 SUPPORTED_BOOK_EXTENSIONS = {".pdf", ".djvu", ".djv", ".epub", ".fb2"}
 
@@ -148,15 +148,28 @@ def _collect_zip_sources(root: str, archive_path: str, stats: dict[str, int]) ->
     return sources
 
 
-def collect_book_sources(root: str) -> tuple[list[BookSource], dict[str, int]]:
+def _norm_dir(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def collect_book_sources(root: str, exclude_dirs: tuple[str, ...] = ()) -> tuple[list[BookSource], dict[str, int]]:
+    """exclude_dirs — каталоги, которые не сканируются (например, папка вывода внутри входной)."""
     stats = {
         "processed_zip_members": 0,
         "skipped_zip_members": 0,
         "regular_book_sources": 0,
     }
     sources: list[BookSource] = []
+    excluded = {_norm_dir(path) for path in exclude_dirs if path}
 
-    for current_root, _, files in os.walk(root):
+    for current_root, dirs, files in os.walk(root):
+        kept = []
+        for name in sorted(dirs, key=lambda value: value.lower()):
+            if _norm_dir(os.path.join(current_root, name)) in excluded:
+                logger.info("scan_dir_excluded path=%s", os.path.join(current_root, name))
+                continue
+            kept.append(name)
+        dirs[:] = kept
         for name in sorted(files, key=lambda value: value.lower()):
             full_path = os.path.join(current_root, name)
             ext = os.path.splitext(name)[1].lower()

@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS books (
     provider_match_score REAL,
     status TEXT,
     error_reason TEXT,
-    new_path TEXT
+    new_path TEXT,
+    content_hash TEXT
 );
 """
 
@@ -82,6 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_books_isbn_norm ON books(isbn_norm);
 CREATE INDEX IF NOT EXISTS idx_books_title_author ON books(title, author);
 CREATE INDEX IF NOT EXISTS idx_books_origin ON books(origin_type, origin_path);
 CREATE INDEX IF NOT EXISTS idx_cache_expires_at ON metadata_cache(expires_at);
+CREATE INDEX IF NOT EXISTS idx_books_content_hash ON books(content_hash);
 """
 
 BOOK_COLUMN_MIGRATIONS = {
@@ -99,6 +101,7 @@ BOOK_COLUMN_MIGRATIONS = {
     "provider_match_score": "REAL",
     "status": "TEXT",
     "error_reason": "TEXT",
+    "content_hash": "TEXT",
 }
 
 
@@ -130,7 +133,7 @@ class BookDB:
             if column not in existing:
                 cursor.execute(f"ALTER TABLE books ADD COLUMN {column} {sql_type}")
 
-    def insert_book(
+    def upsert_book(
         self,
         time_added: str,
         original_filename: str,
@@ -155,8 +158,54 @@ class BookDB:
         provider_match_score: Optional[float] = None,
         status: Optional[str] = None,
         error_reason: Optional[str] = None,
+        content_hash: Optional[str] = None,
     ) -> int:
         cursor = self.conn.cursor()
+        existing = self.find_book_by_origin(origin_type, origin_path)
+        if existing:
+            # Повторная обработка (например, после ошибки) обновляет строку, а не плодит дубль
+            cursor.execute(
+                """
+                UPDATE books SET
+                    time_added = ?, original_filename = ?, original_path = ?, origin_type = ?,
+                    origin_path = ?, archive_path = ?, archive_member = ?, isbn = ?, isbn_norm = ?,
+                    preview_text = ?, title = ?, title_raw = ?, author = ?, author_raw = ?,
+                    series = ?, series_index = ?, category = ?, metadata_source = ?,
+                    metadata_confidence = ?, provider_match_score = ?, status = ?,
+                    error_reason = ?, new_path = ?, content_hash = ?
+                WHERE id = ?
+                """,
+                (
+                    time_added,
+                    original_filename,
+                    original_path,
+                    origin_type,
+                    origin_path,
+                    archive_path,
+                    archive_member,
+                    isbn,
+                    isbn_norm,
+                    preview_text,
+                    title,
+                    title_raw,
+                    author,
+                    author_raw,
+                    series,
+                    series_index,
+                    category,
+                    metadata_source,
+                    metadata_confidence,
+                    provider_match_score,
+                    status,
+                    error_reason,
+                    new_path,
+                    content_hash,
+                    existing["id"],
+                ),
+            )
+            self.conn.commit()
+            return existing["id"]
+
         cursor.execute(
             """
             INSERT INTO books (
@@ -165,9 +214,9 @@ class BookDB:
                 preview_text, title, title_raw, author, author_raw,
                 series, series_index, category, metadata_source,
                 metadata_confidence, provider_match_score, status,
-                error_reason, new_path
+                error_reason, new_path, content_hash
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time_added,
@@ -193,6 +242,7 @@ class BookDB:
                 status,
                 error_reason,
                 new_path,
+                content_hash,
             ),
         )
         self.conn.commit()
@@ -212,16 +262,49 @@ class BookDB:
         )
         return [tuple(row) for row in cursor.fetchall()]
 
-    def get_all_origin_keys(self) -> set[tuple[str, str]]:
+    def get_all_origin_keys(self, only_ok: bool = True) -> set[tuple[str, str]]:
+        """Ключи уже обработанных источников. При only_ok ошибочные не возвращаются — их обработают заново."""
         cursor = self.conn.cursor()
         cursor.execute(
-            """
+            f"""
             SELECT origin_type, origin_path
             FROM books
             WHERE origin_path IS NOT NULL AND origin_path != ''
+            {"AND status IN ('ok', 'duplicate')" if only_ok else ""}
             """
         )
         return {(str(row["origin_type"] or ""), str(row["origin_path"] or "")) for row in cursor.fetchall()}
+
+    def get_ok_hashes(self) -> dict[str, str]:
+        """отпечаток содержимого → путь в библиотеке для успешно разложенных книг."""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT content_hash, new_path
+            FROM books
+            WHERE status = 'ok' AND content_hash IS NOT NULL AND content_hash != ''
+            ORDER BY id
+            """
+        )
+        hashes: dict[str, str] = {}
+        for row in cursor.fetchall():
+            hashes.setdefault(row["content_hash"], row["new_path"] or "")
+        return hashes
+
+    def find_book_by_origin(self, origin_type: Optional[str], origin_path: Optional[str]) -> dict | None:
+        cursor = self.conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, status, new_path
+            FROM books
+            WHERE origin_type = ? AND origin_path = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (origin_type, origin_path),
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
 
     def get_cached_metadata(self, query_key: str) -> dict | None:
         now = int(time.time())

@@ -1,55 +1,84 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Copyright (C) 2026 The ScanBookShelf Authors
 
-import os
-import pytesseract
-import fitz  # PyMuPDF
-from ebooklib import epub
-from bs4 import BeautifulSoup
-import xml.etree.ElementTree as ET
-import concurrent.futures
-from PIL import Image
 import io
-import numpy as np
-# import pymupdf
-import subprocess
-from tempfile import TemporaryDirectory
-import shutil
+import os
+import posixpath
 import re
-import unicodedata
+import shutil
+import subprocess
+import warnings
+import xml.etree.ElementTree as ET
+import zipfile
+from tempfile import TemporaryDirectory
+from urllib.parse import unquote
+
+import pymupdf
+import pytesseract
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+from PIL import Image
 
 from config import (
     DDJVU_PAGE_TIMEOUT_SEC,
     LANGUAGES,
     MAX_PAGES,
     MAX_TAIL_PAGES,
+    OCR_DPI,
     OCR_ENABLED,
     OCR_PAGE_TIMEOUT_SEC,
     TESSERACT_CMD,
     WORDS_PER_PAGES,
 )
+from interrupt import Interrupted, check_interrupted, stop_event
+from normalization import extract_first_valid_isbn
+from utils import long_path
 
-# Проверяем, установлен ли путь к tesseract
-if OCR_ENABLED and TESSERACT_CMD:
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+def resolve_tesseract_cmd(raw: str) -> str:
+    """TESSERACT_CMD может указывать на папку установки — дописываем имя исполняемого файла."""
+    value = str(raw or "").strip()
+    if value and os.path.isdir(value):
+        value = os.path.join(value, "tesseract.exe" if os.name == "nt" else "tesseract")
+    return value
+
+
+# xhtml глав EPUB и битые fb2 намеренно читаются терпимым html.parser
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+
+TESSERACT_PATH = resolve_tesseract_cmd(TESSERACT_CMD)
+if OCR_ENABLED and TESSERACT_PATH:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
+
+# Отдельная группа процессов: Ctrl+C в консоли не убивает djvused/ddjvu посреди страницы,
+# остановка идёт через stop_event между страницами.
+_SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 
 class OCRTimeoutError(RuntimeError):
     """Таймаут OCR/DDJVU для маршрутизации файла в Errors."""
 
 
-def _is_timeout_message(message: str) -> bool:
+class OCRConfigError(RuntimeError):
+    """Внешний инструмент (tesseract, DjVuLibre) не запускается — ошибка окружения, а не книги."""
+
+
+class ExtractError(RuntimeError):
+    """Книгу не удалось прочитать; сообщение идёт в error_reason."""
+
+
+def _is_timeout_message(message) -> bool:
     lowered = str(message or "").lower()
     return "timeout" in lowered or "timed out" in lowered
 
 
 def prepare_book_path(path):
     """
-    Проверяет имя файла и при наличии кириллицы копирует во временную папку с транслитерацией.
-    Возвращает (новый_путь, temp_dir_obj).
-    temp_dir_obj нужно хранить, пока используется файл, чтобы он не удалился.
+    Консольные утилиты DjVuLibre под Windows не открывают пути с не-ASCII символами
+    (в имени файла или в любом каталоге). Такой файл копируется во временную папку
+    с транслитерированным именем.
+    Возвращает (новый_путь, temp_dir_obj); temp_dir_obj нужно держать, пока файл используется.
     """
-    
+
     # Транслитерация кириллицы в латиницу (ГОСТ упрощённый)
     translit_map = {
         'а':'a', 'б':'b', 'в':'v', 'г':'g', 'д':'d', 'е':'e', 'ё':'yo', 'ж':'zh', 'з':'z',
@@ -62,18 +91,16 @@ def prepare_book_path(path):
     def transliterate(text):
         return ''.join(translit_map.get(ch, ch) for ch in text)
 
-    filename = os.path.basename(path)
-    
-    # Проверка на наличие кириллицы
-    if re.search(r'[А-Яа-яЁё]', filename):
-        temp_dir = TemporaryDirectory()
-        safe_name = transliterate(filename)
-        safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', safe_name)  # убираем опасные символы
-        new_path = os.path.join(temp_dir.name, safe_name)
-        shutil.copy2(path, new_path)
-        return new_path, temp_dir
-    else:
+    if str(path).isascii() and len(os.path.abspath(path)) < 240:
         return path, None
+
+    temp_dir = TemporaryDirectory()
+    safe_name = transliterate(os.path.basename(path))
+    safe_name = re.sub(r'[^A-Za-z0-9._-]', '_', safe_name) or "book.djvu"
+    new_path = os.path.join(temp_dir.name, safe_name)
+    shutil.copy2(long_path(path), new_path)
+    return new_path, temp_dir
+
 
 def needs_ocr(text):
     """Определяет, нужно ли применять OCR к документу"""
@@ -82,197 +109,278 @@ def needs_ocr(text):
         return True
     return False
 
-def perform_ocr_on_page(page):
-    """Выполняет OCR на одной странице документа"""
+
+def ocr_image(img) -> str:
+    """Распознаёт одно изображение страницы. Ошибки окружения пробрасываются, а не превращаются в пустой текст."""
+    check_interrupted()
+    timeout_sec = max(1, int(OCR_PAGE_TIMEOUT_SEC))
     try:
-        # Получаем изображение страницы с высоким разрешением
-        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-        
-        # Конвертируем в формат для Pillow
-        img = Image.open(io.BytesIO(pix.tobytes(output="png")))
-        
-        # Применяем OCR с распознаванием указанных языков
-        timeout_sec = max(1, int(OCR_PAGE_TIMEOUT_SEC))
-        text = pytesseract.image_to_string(img, lang=LANGUAGES, timeout=timeout_sec)
-        return text
-    except RuntimeError as e:
-        if _is_timeout_message(e):
-            raise OCRTimeoutError(f"ocr_timeout>{max(1, int(OCR_PAGE_TIMEOUT_SEC))}s") from e
-        print(f"Ошибка OCR: {e}")
-        return ""
-    except Exception as e:
-        print(f"Ошибка OCR: {e}")
-        return ""
+        return pytesseract.image_to_string(img, lang=LANGUAGES, timeout=timeout_sec)
+    except pytesseract.TesseractNotFoundError as exc:
+        raise OCRConfigError(f"tesseract_not_found:{pytesseract.pytesseract.tesseract_cmd}") from exc
+    except OSError as exc:
+        # PermissionError [WinError 5] — TESSERACT_CMD указывает не на исполняемый файл
+        raise OCRConfigError(f"tesseract_not_runnable:{exc}") from exc
+    except RuntimeError as exc:
+        # Ctrl+C убивает дочерний tesseract — это прерывание, а не ошибка книги
+        if stop_event.is_set():
+            raise Interrupted("processing_interrupted") from exc
+        if _is_timeout_message(exc):
+            raise OCRTimeoutError(f"ocr_timeout>{timeout_sec}s") from exc
+        raise ExtractError(f"ocr_failed:{exc}") from exc
+
+
+def perform_ocr_on_page(page):
+    """Выполняет OCR на одной странице PDF"""
+    pix = page.get_pixmap(dpi=OCR_DPI)
+    with Image.open(io.BytesIO(pix.tobytes(output="png"))) as img:
+        return ocr_image(img)
+
+
+def _head_tail_ranges(total: int, head_pages: int, tail_pages: int) -> tuple[list[int], list[int]]:
+    """0-based номера страниц начала и конца; хвост не пересекается с началом."""
+    head = list(range(min(max(0, head_pages), total)))
+    tail = list(range(max(len(head), total - max(0, tail_pages)), total))
+    return head, tail
+
+
+def detect_format(path) -> str:
+    """Формат по сигнатуре файла: расширению доверять нельзя (встречаются PDF с расширением .epub)."""
+    with open(long_path(path), "rb") as f:
+        header = f.read(1024)
+
+    if header.startswith(b"AT&TFORM"):
+        return "djvu"
+    if header.startswith(b"PK\x03\x04"):
+        if os.path.splitext(path)[1].lower() == ".fb2":
+            return "fb2"  # fb2, упакованный в zip
+        return "epub"
+    if b"%PDF" in header:
+        return "pdf"
+    stripped = header.lstrip(b"\xef\xbb\xbf \t\r\n")
+    if stripped.startswith(b"<") and b"FictionBook" in header:
+        return "fb2"
+    if stripped.startswith(b"<") and os.path.splitext(path)[1].lower() == ".fb2":
+        return "fb2"
+    raise ExtractError(f"unknown_format:{header[:8]!r}")
+
 
 def extract_text_with_ends(path, head_pages=MAX_PAGES, tail_pages=MAX_TAIL_PAGES):
     """
     Извлекает текст из первых head_pages и последних tail_pages страниц.
-    Для fb2/epub tail_pages трактуются как последние блоки текста.
+    Для fb2/epub страницы считаются как блоки по WORDS_PER_PAGES слов.
+    Возвращает (head, tail).
     """
-    text_head = extract_text(path, max_pages=head_pages, part="head")
-    text_tail = extract_text(path, max_pages=tail_pages, part="tail")
-    return [text_head,text_tail]
-
-def extract_text_pdf(path, max_pages, part="head"):
-    """Извлекает текст из PDF с поддержкой OCR"""
-    text = ""
-    try:
-        doc = fitz.open(path)
-        if part == "head":
-            page_range = range(min(max_pages, len(doc)))
-        elif part == "tail":
-            page_range = range(max(0, len(doc) - max_pages), len(doc))
-        else:
-            raise ValueError("part должен быть 'head' или 'tail'")
-        
-        # Сначала пробуем стандартное извлечение текста
-        for page_number in page_range:
-            page = doc[page_number]
-            page_text = page.get_text()
-            text += page_text + "\n"
-        
-        # Проверяем, нужно ли OCR
-        if OCR_ENABLED and needs_ocr(text):
-            print(f"🔍 Применяю OCR для PDF: {os.path.basename(path)}")
-            text = ""  # Сбрасываем текст, т.к. будем использовать OCR
-            
-            # Применяем OCR к страницам
-            for page_number in page_range:
-                page = doc[page_number]
-                page_text = perform_ocr_on_page(page)
-                text += page_text + "\n"
-    except OCRTimeoutError:
-        raise
-    except Exception as e:
-        print(f"Ошибка при извлечении текста из PDF: {e}")
-    
-    return text.strip()
-
-def extract_text_djvu(path, max_pages, part="head"):
-    """Извлекает текст из DJVU с OCR через ddjvu, используя perform_ocr_on_page"""
-    safe_path, temp_dir = prepare_book_path(path)
-    text = ""
-    timeout_sec = max(1, int(DDJVU_PAGE_TIMEOUT_SEC))
-    with TemporaryDirectory() as tmpdir:
-        try:
-            proc = subprocess.run(
-                ["djvused.exe", "-e", "n", safe_path],
-                capture_output=True,
-                text=True,
-                timeout=timeout_sec,
-            )
-            total_pages = int(proc.stdout.strip())
-            if part == "head":
-                page_range = range(min(max_pages, total_pages))
-            elif part == "tail":
-                page_range = range(max(0, total_pages - max_pages), total_pages)
-            for page_num in page_range:
-                out_file = os.path.join(tmpdir, f"page{page_num}.tiff")
-                try:
-                    subprocess.run(
-                        [
-                            "ddjvu.exe",
-                            "-format=tiff",
-                            f"-page={page_num}",
-                            safe_path,
-                            out_file,
-                        ],
-                        check=True,
-                        timeout=timeout_sec,
-                        capture_output=True,
-                        text=True,
-                    )
-                except subprocess.TimeoutExpired as exc:
-                    raise OCRTimeoutError(f"ddjvu_timeout>{timeout_sec}s page={page_num}") from exc
-
-                # Открываем TIFF
-                img = Image.open(out_file)
-
-                # Конвертируем в PNG в память
-                buf = io.BytesIO()
-                img.save(buf, format="PNG")
-                buf.seek(0)
-
-                # Создаём fitz.Document из PNG
-                doc = fitz.open("png", buf.read())
-                page = doc[0]  # всегда одна страница
-
-                # Используем уже существующую функцию
-                page_text = perform_ocr_on_page(page)
-                text += page_text + "\n"
-                print(f"📄 OCR страница {page_num}/{MAX_PAGES}")
-
-        except subprocess.TimeoutExpired as exc:
-            raise OCRTimeoutError(f"ddjvu_timeout>{timeout_sec}s") from exc
-        except OCRTimeoutError:
-            raise
-        except FileNotFoundError:
-            print("❌ ddjvu не найден! Установи DjVuLibre и добавь его в PATH.")
-        except subprocess.CalledProcessError as e:
-            print(f"Ошибка при обработке DJVU: {e}")
-        finally:
-            if temp_dir:  # удаляем временный каталог
-                temp_dir.cleanup()
-
-    return text.strip()
-
-def extract_text_epub(path, max_pages=1000, part="head"):
-    book = epub.read_epub(path)
-    words_in_pages = WORDS_PER_PAGES * max_pages
-    items = [item for item in book.get_items() if item.get_type() == 9]  # Только DOCUMENT
-    
-    # Если tail — идем с конца
-    if part == "tail":
-        items = reversed(items)
-
-    words = []
-    for item in items:
-        soup = BeautifulSoup(item.get_content(), 'html.parser')
-        words.extend(soup.get_text().split())
-
-        if len(words) >= words_in_pages:
-            break
-    
-    # Если брали с конца — переворачиваем обратно, чтобы текст был читаемым
-    if part == "tail":
-        # print(words)
-        words = words[-len(words):]
-        # print(words)
-    else:
-        words = words[:words_in_pages]
-
-    return " ".join(words)
-
-
-def extract_text_fb2(path, max_pages=1000, part="head"):
-    words_in_pages = WORDS_PER_PAGES * max_pages
-    try:
-        tree = ET.parse(path)
-        root = tree.getroot()
-
-        # Все текстовые элементы
-        texts = [elem.text.strip() for elem in root.iter() if elem.text]
-
-        if part == "tail":
-            selected = texts[-words_in_pages:]
-        else:
-            selected = texts[:words_in_pages]
-
-        return " ".join(selected)
-    except Exception:
-        return ""
-    
-def extract_text(path, max_pages, part="head"):
-    """Извлекает текст из книги в зависимости от формата"""
     print(f"📄 Извлечение текста из: {os.path.basename(path)}")
-    
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".pdf":
-        return extract_text_pdf(path, max_pages, part)
-    elif ext in (".djvu", ".djv"):
-        return extract_text_djvu(path, max_pages, part)
-    elif ext == ".epub":
-        return extract_text_epub(path, max_pages, part)
-    elif ext == ".fb2":
-        return extract_text_fb2(path, max_pages, part)
-    return ""
+
+    fmt = detect_format(path)
+    if fmt == "pdf":
+        return extract_text_pdf(path, head_pages, tail_pages)
+    if fmt == "djvu":
+        return extract_text_djvu(path, head_pages, tail_pages)
+    if fmt == "epub":
+        return extract_text_epub(path, head_pages, tail_pages)
+    return extract_text_fb2(path, head_pages, tail_pages)
+
+
+def _tail_ocr_needed(head_text: str) -> bool:
+    # Хвост читается только ради ISBN: если он уже найден в начале, дорогой OCR хвоста не нужен
+    return not extract_first_valid_isbn(head_text)
+
+
+def _ocr_pages(pages: list[int], label: str, ocr_page) -> str:
+    """OCR диапазона страниц. Таймаут одной страницы её пропускает; ошибка — только если не удалась ни одна."""
+    parts = []
+    timeouts = []
+    for done, page in enumerate(pages, start=1):
+        try:
+            parts.append(ocr_page(page))
+            print(f"📄 OCR {label} страница {done}/{len(pages)}")
+        except OCRTimeoutError as exc:
+            timeouts.append(str(exc))
+            print(f"⚠️ OCR {label} страница {done}/{len(pages)} пропущена: {exc}")
+    if timeouts and len(timeouts) == len(pages):
+        raise OCRTimeoutError(timeouts[0])
+    return "\n".join(parts).strip()
+
+
+def _pdf_pages_text(doc, pages: list[int], label: str, allow_ocr: bool = True) -> str:
+    text = "\n".join(doc[page_number].get_text() for page_number in pages)
+    if OCR_ENABLED and allow_ocr and pages and needs_ocr(text):
+        print(f"🔍 Применяю OCR для PDF ({label})")
+        return _ocr_pages(pages, label, lambda page_number: perform_ocr_on_page(doc[page_number]))
+    return text.strip()
+
+
+def extract_text_pdf(path, head_pages, tail_pages):
+    """Извлекает текст из PDF с поддержкой OCR"""
+    # filetype явно: PyMuPDF иначе выбирает тип по расширению (а бывают PDF с расширением .epub)
+    with pymupdf.open(long_path(path), filetype="pdf") as doc:
+        if doc.needs_pass:
+            raise ExtractError("pdf_encrypted")
+        head, tail = _head_tail_ranges(len(doc), head_pages, tail_pages)
+        head_text = _pdf_pages_text(doc, head, "head")
+        return head_text, _pdf_pages_text(doc, tail, "tail", allow_ocr=_tail_ocr_needed(head_text))
+
+
+def _run_tool(args: list[str], timeout_sec: int) -> bytes:
+    check_interrupted()
+    tool = args[0]
+    try:
+        proc = subprocess.run(
+            args,
+            capture_output=True,
+            timeout=timeout_sec,
+            creationflags=_SUBPROCESS_FLAGS,
+        )
+    except FileNotFoundError as exc:
+        raise OCRConfigError(f"{tool}_not_found: установи DjVuLibre и добавь его в PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OCRTimeoutError(f"{tool}_timeout>{timeout_sec}s") from exc
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        raise ExtractError(f"{tool}_failed rc={proc.returncode}: {stderr[0] if stderr else ''}")
+    return proc.stdout
+
+
+def _djvu_pages_text(
+    safe_path: str, pages: list[int], label: str, tmpdir: str, timeout_sec: int, allow_ocr: bool = True
+) -> str:
+    # Сначала текстовый слой: многие djvu уже распознаны, OCR тогда не нужен.
+    layer = [
+        _run_tool(["djvutxt", f"--page={page + 1}", safe_path], timeout_sec).decode("utf-8", errors="replace")
+        for page in pages
+    ]
+    text = "\n".join(layer)
+    if not OCR_ENABLED or not allow_ocr or not pages or not needs_ocr(text):
+        return text.strip()
+
+    def ocr_page(page: int) -> str:
+        out_file = os.path.join(tmpdir, f"page{page + 1}.tiff")
+        # Страницы у ddjvu нумеруются с 1. Сканы часто в 600 dpi: на таком растре Tesseract
+        # тратит минуты на страницу и находит мусор в иллюстрациях, на OCR_DPI — секунды.
+        _run_tool(["ddjvu", "-format=tiff", f"-scale={OCR_DPI}", f"-page={page + 1}", safe_path, out_file], timeout_sec)
+        try:
+            with Image.open(out_file) as img:
+                return ocr_image(img)
+        finally:
+            os.remove(out_file)
+
+    print(f"🔍 Применяю OCR для DJVU ({label})")
+    return _ocr_pages(pages, label, ocr_page)
+
+
+def extract_text_djvu(path, head_pages, tail_pages):
+    """Извлекает текст из DJVU: текстовый слой через djvutxt, иначе OCR страниц, отрендеренных ddjvu"""
+    timeout_sec = max(1, int(DDJVU_PAGE_TIMEOUT_SEC))
+    safe_path, temp_dir = prepare_book_path(path)
+    try:
+        raw_count = _run_tool(["djvused", "-e", "n", safe_path], timeout_sec).decode("ascii", errors="replace").strip()
+        if not raw_count.isdigit():
+            raise ExtractError(f"djvused_bad_page_count:{raw_count[:40]!r}")
+        head, tail = _head_tail_ranges(int(raw_count), head_pages, tail_pages)
+        with TemporaryDirectory() as tmpdir:
+            head_text = _djvu_pages_text(safe_path, head, "head", tmpdir, timeout_sec)
+            tail_text = _djvu_pages_text(
+                safe_path, tail, "tail", tmpdir, timeout_sec, allow_ocr=_tail_ocr_needed(head_text)
+            )
+            return head_text, tail_text
+    finally:
+        if temp_dir:
+            temp_dir.cleanup()
+
+
+def _local_name(tag) -> str:
+    return str(tag).rsplit("}", 1)[-1]
+
+
+def _split_head_tail_words(words: list[str], head_pages: int, tail_pages: int) -> tuple[str, str]:
+    head = words[: WORDS_PER_PAGES * max(0, head_pages)]
+    tail_start = max(len(head), len(words) - WORDS_PER_PAGES * max(0, tail_pages))
+    return " ".join(head), " ".join(words[tail_start:])
+
+
+def _epub_spine_paths(archive: zipfile.ZipFile) -> list[str]:
+    names = archive.namelist()
+    opf_path = ""
+    if "META-INF/container.xml" in names:
+        container = ET.fromstring(archive.read("META-INF/container.xml"))
+        for elem in container.iter():
+            if _local_name(elem.tag) == "rootfile" and elem.get("full-path"):
+                opf_path = elem.get("full-path")
+                break
+    if not opf_path:
+        opf_path = next((name for name in names if name.lower().endswith(".opf")), "")
+
+    spine: list[str] = []
+    if opf_path in names:
+        opf = ET.fromstring(archive.read(opf_path))
+        base = posixpath.dirname(opf_path)
+        manifest = {}
+        for elem in opf.iter():
+            if _local_name(elem.tag) == "item" and elem.get("id") and elem.get("href"):
+                href = unquote(elem.get("href").split("#", 1)[0])
+                manifest[elem.get("id")] = posixpath.normpath(posixpath.join(base, href))
+        for elem in opf.iter():
+            if _local_name(elem.tag) == "itemref" and elem.get("idref") in manifest:
+                spine.append(manifest[elem.get("idref")])
+
+    if not spine:
+        spine = sorted(name for name in names if name.lower().endswith((".xhtml", ".html", ".htm")))
+    # Битый манифест ссылается на отсутствующие файлы — пропускаем их, а не падаем
+    available = set(names)
+    return [name for name in dict.fromkeys(spine) if name in available]
+
+
+def _epub_words(path) -> list[str]:
+    words: list[str] = []
+    with zipfile.ZipFile(long_path(path)) as archive:
+        for name in _epub_spine_paths(archive):
+            soup = BeautifulSoup(archive.read(name), "html.parser")
+            words.extend(soup.get_text(" ").split())
+    return words
+
+
+def _pymupdf_text(path, head_pages, tail_pages) -> tuple[str, str]:
+    with pymupdf.open(long_path(path), filetype="epub") as doc:
+        head, tail = _head_tail_ranges(len(doc), head_pages, tail_pages)
+        return (
+            "\n".join(doc[page].get_text() for page in head).strip(),
+            "\n".join(doc[page].get_text() for page in tail).strip(),
+        )
+
+
+def extract_text_epub(path, head_pages, tail_pages):
+    try:
+        words = _epub_words(path)
+    except Exception as exc:
+        print(f"⚠️ EPUB не разобран напрямую ({exc}), пробую PyMuPDF")
+        return _pymupdf_text(path, head_pages, tail_pages)
+    return _split_head_tail_words(words, head_pages, tail_pages)
+
+
+def _read_fb2_bytes(path) -> bytes:
+    if zipfile.is_zipfile(long_path(path)):
+        with zipfile.ZipFile(long_path(path)) as archive:
+            member = next((name for name in archive.namelist() if name.lower().endswith(".fb2")), None)
+            if not member:
+                raise ExtractError("fb2_zip_without_fb2")
+            return archive.read(member)
+    with open(long_path(path), "rb") as f:
+        return f.read()
+
+
+def extract_text_fb2(path, head_pages, tail_pages):
+    data = _read_fb2_bytes(path)
+    try:
+        root = ET.fromstring(data)
+        # <binary> — картинки в base64, в текст их не берём; description нужен ради ISBN и автора
+        parts = [" ".join(child.itertext()) for child in root if _local_name(child.tag) != "binary"]
+    except ET.ParseError:
+        # Многие fb2 — невалидный XML; html.parser читает их терпимо
+        soup = BeautifulSoup(data, "html.parser")
+        for binary in soup.find_all("binary"):
+            binary.decompose()
+        parts = [soup.get_text(" ")]
+    return _split_head_tail_words(" ".join(parts).split(), head_pages, tail_pages)

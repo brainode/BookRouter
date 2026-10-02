@@ -74,6 +74,27 @@ def to_ascii_slug(value: str, fallback: str = "unknown") -> str:
     return mapped or fallback
 
 
+_PATRONYMIC_RE = re.compile(r"^[А-ЯЁ][а-яё]+(?:ович|евич|ич|овна|евна|ична|инична)$")
+_MIDDLE_INITIAL_RE = re.compile(r"^[A-ZА-ЯЁ]\.?$")
+
+
+def canonical_author_name(name: str) -> str:
+    """«Иван Иванович Петров» и «Иван Петров», «John Q. Public» и «John Public» — один автор:
+    для папок отбрасываем отчество и средние инициалы."""
+    words = normalize_spaces(name).split()
+    if len(words) < 3:
+        return normalize_spaces(name)
+    kept = [words[0]] + [
+        word for word in words[1:-1] if not (_PATRONYMIC_RE.match(word) or _MIDDLE_INITIAL_RE.match(word))
+    ] + [words[-1]]
+    return " ".join(kept)
+
+
+def token_key(value: str) -> str:
+    """Ключ без учёта порядка слов: «Петров Иван» == «Иван Петров»."""
+    return "-".join(sorted(to_ascii_slug(value, fallback="").split("-")))
+
+
 def normalize_for_match(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", to_ascii_slug(value, fallback=""))
 
@@ -143,10 +164,75 @@ def extract_first_valid_isbn(text: str) -> str | None:
 def _cleanup_filename_token(token: str) -> str:
     token = normalize_spaces(token)
     token = re.sub(r"\([^)]*\)", "", token)
+    token = re.sub(r"\[[^\]]*\]", "", token)
     token = re.sub(r"\b(?:19|20)\d{2}\b", "", token)
     token = re.sub(r"[_]+", " ", token)
-    token = normalize_spaces(token)
-    return token.strip("- ")
+    token = normalize_spaces(token).strip("-— ")
+    # Точку после инициала («Смит Дж.», «Сидоров А.С.») сохраняем, остальные хвостовые точки убираем
+    if token.endswith(".") and not re.search(r"(?:^|[\s.])[A-ZА-ЯЁ][a-zа-яё]{0,2}\.$", token):
+        token = token.rstrip(". ")
+    return token
+
+
+# Скобки с иллюстратором/переводчиком/редакцией, томом или жанровой пометкой — не серия
+_NOT_SERIES_RE = re.compile(
+    r"^\s*(?:худ|худож|ил|илл|рис|пер|ред|сост|авт|изд|пересказ|обраб|ill|illus|trans|transl|ed|edition|vol|volume|том|т|кн|книга|часть|ч)"
+    r"(?:\b|\.)"
+    r"|^\s*(?:сборник|рассказы|повесть|повести|роман|сказки|стихи|антология|fb2|pdf|djvu|epub|ocr|scan)\s*$",
+    re.IGNORECASE,
+)
+
+_GENRE_WORDS = {
+    "сказка", "сказки", "водевиль", "пьеса", "пьесы", "поэма", "поэмы", "стихи", "стихотворения", "басни",
+    "повесть", "повести", "рассказ", "рассказы", "роман", "романы", "новеллы", "очерки", "сборник", "и",
+    "fiction", "novel", "stories", "poems", "short",
+}
+
+# «Смит Дж.», «А. С. Сидоров», «Иван Петров», «John Doe»
+_INITIAL_RE = re.compile(r"^[A-ZА-ЯЁ][a-zа-яё]{0,2}\.$")
+_NAME_WORD_RE = re.compile(r"^[A-ZА-ЯЁ][a-zа-яё'’\-]+$")
+
+
+def _looks_like_person(token: str) -> bool:
+    words = normalize_spaces(re.sub(r"(?<=\.)(?=\S)", " ", token)).split()
+    if not 1 <= len(words) <= 4 or any(ch.isdigit() for ch in token):
+        return False
+    has_initial = any(_INITIAL_RE.match(word) for word in words)
+    names = [word for word in words if _NAME_WORD_RE.match(word)]
+    if has_initial:
+        return len(names) + sum(bool(_INITIAL_RE.match(w)) for w in words) == len(words)
+    return len(words) >= 2 and len(names) == len(words)
+
+
+def _has_initials(token: str) -> bool:
+    return bool(re.search(r"(?:^|[\s.])[A-ZА-ЯЁ][a-zа-яё]{0,2}\.", token))
+
+
+def _author_is_left(left: str, right: str) -> bool:
+    """Обычный порядок в библиотеках — «Автор - Название», но встречается и «Название - Автор»."""
+    if "," in left:
+        return True
+    left_person, right_person = _looks_like_person(left), _looks_like_person(right)
+    if left_person != right_person:
+        return left_person
+    if left_person and right_person and _has_initials(left) != _has_initials(right):
+        return _has_initials(left)
+    return left_person
+
+
+def _series_from_brackets(base: str) -> str:
+    candidates = re.findall(r"\[([^\[\]]{2,80})\]", base) + re.findall(r"\(([^()]{2,80})\)", base)
+    for raw in candidates:
+        value = normalize_spaces(raw.replace("_", " "))
+        if re.fullmatch(r"[\d\s.,\-–—]*(?:19|20)?\d*[\d\s.,\-–—]*", value):
+            continue  # год, номер
+        if _NOT_SERIES_RE.search(value):
+            continue
+        tokens = [token for token in re.split(r"[\s,\-–—/]+", value.lower()) if token]
+        if tokens and all(token in _GENRE_WORDS for token in tokens):
+            continue  # «[Пьеса-сказка]», «(повесть, рассказы)»
+        return value.strip("-—. ")
+    return ""
 
 
 def _normalize_author_token(author: str) -> str:
@@ -166,24 +252,27 @@ def parse_filename_hints(filename: str) -> dict[str, str]:
 
     title = ""
     author = ""
-    series = ""
 
     if len(parts) >= 2:
         left = _cleanup_filename_token(parts[0])
         right = _cleanup_filename_token(parts[1])
 
-        if "," in left:
+        if _author_is_left(left, right):
             author = _normalize_author_token(left)
             title = right
         else:
             title = left
             author = _normalize_author_token(right)
     elif parts:
-        title = _cleanup_filename_token(parts[0])
+        # «Название [2021] Автор»
+        match = re.match(r"^(.*?)\s*\[(?:19|20)\d{2}\]\s*(.+)$", parts[0])
+        if match and _looks_like_person(_cleanup_filename_token(match.group(2))):
+            title = _cleanup_filename_token(match.group(1))
+            author = _normalize_author_token(match.group(2))
+        else:
+            title = _cleanup_filename_token(parts[0])
 
-    series_match = re.search(r"\(([^()]{2,80})\)", base)
-    if series_match:
-        series = _cleanup_filename_token(series_match.group(1))
+    series = _series_from_brackets(base)
 
     title = title or "Неизвестное название"
     author = author or "Неизвестный автор"

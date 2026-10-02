@@ -15,7 +15,7 @@ class OpenLibraryProvider(MetadataProvider):
         self.timeout_sec = timeout_sec
 
     def _get_json(self, url: str) -> dict:
-        request = urllib.request.Request(url, headers={"User-Agent": "ScanBookShelf/1.0"})
+        request = urllib.request.Request(url, headers={"User-Agent": "BookRouter/1.0"})
         with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
             payload = response.read().decode("utf-8")
             return json.loads(payload)

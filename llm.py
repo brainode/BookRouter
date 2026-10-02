@@ -2,11 +2,13 @@
 # Copyright (C) 2026 The ScanBookShelf Authors
 
 import json
+import logging
 import re
 import time
 from typing import Any
 
-from ollama import chat
+import httpx
+from ollama import Client, ResponseError
 
 from config import (
     CATEGORY_TREE,
@@ -15,9 +17,12 @@ from config import (
     LLM_NUM_PREDICT,
     LLM_REQUEST_DELAY_SEC,
     LLM_TEMPERATURE,
+    LLM_THINK,
+    LLM_TIMEOUT_SEC,
     MODEL_NAME,
 )
 from normalization import (
+    canonical_author_name,
     extract_first_valid_isbn,
     is_unknown_label,
     normalize_spaces,
@@ -25,7 +30,10 @@ from normalization import (
     to_ascii_slug,
 )
 
+logger = logging.getLogger("bookrouter")
 last_request_time = 0.0
+# Без таймаута зависший сервер Ollama подвешивает весь прогон
+_client = Client(timeout=LLM_TIMEOUT_SEC)
 
 
 def _parse_categories(raw_tree: str) -> list[str]:
@@ -91,6 +99,51 @@ def _safe_json_loads(raw: str) -> dict[str, Any]:
     return {}
 
 
+class LLMUnavailableError(RuntimeError):
+    """Ollama недоступна или перегружена — временная ошибка, книгу нужно повторить в следующем запуске."""
+
+
+def _is_parameter_error(exc: Exception) -> bool:
+    # TypeError — старый клиент не знает параметр; 4xx — модель/сервер не поддерживает параметр (think, format)
+    if isinstance(exc, TypeError):
+        return True
+    return isinstance(exc, ResponseError) and 400 <= int(getattr(exc, "status_code", 0) or 0) < 500
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    if isinstance(exc, (ConnectionError, TimeoutError, httpx.TransportError)):
+        return True
+    return isinstance(exc, ResponseError) and int(getattr(exc, "status_code", 0) or 0) >= 500
+
+
+def _chat_raw(messages: list[dict[str, str]], options: dict[str, Any], schema: dict[str, Any] | None):
+    # Thinking-модели (gemma4, qwen3…) иначе тратят весь num_predict на рассуждение и возвращают пустой content
+    attempts = [
+        {"format": schema, "keep_alive": LLM_KEEP_ALIVE, "think": LLM_THINK},
+        {"format": schema, "keep_alive": LLM_KEEP_ALIVE},
+        {"format": schema},
+        {},
+    ]
+    for index, extra in enumerate(attempts):
+        try:
+            return _client.chat(model=MODEL_NAME, messages=messages, options=options, **extra)
+        except Exception as exc:
+            if _is_transient_error(exc):
+                raise LLMUnavailableError(f"ollama_unavailable:{exc}") from exc
+            if not _is_parameter_error(exc) or index == len(attempts) - 1:
+                raise
+            # Старый клиент/модель не поддерживает параметр — пробуем без него
+            logger.debug("ollama_chat_retry without=%s error=%s", sorted(set(attempts[0]) - set(attempts[index + 1])), exc)
+    raise AssertionError("unreachable")
+
+
+def warm_up_model() -> float:
+    """Загружает модель в память до начала обработки; возвращает затраченное время в секундах."""
+    start = time.time()
+    _chat_raw([{"role": "user", "content": "ok"}], {"num_predict": 1}, None)
+    return time.time() - start
+
+
 def _chat_json(system_prompt: str, user_prompt: str, schema: dict[str, Any] | None) -> dict[str, Any]:
     global last_request_time
 
@@ -109,29 +162,16 @@ def _chat_json(system_prompt: str, user_prompt: str, schema: dict[str, Any] | No
         {"role": "user", "content": user_prompt},
     ]
 
-    raw = ""
-    try:
-        raw = chat(
-            model=MODEL_NAME,
-            messages=messages,
-            options=options,
-            format=schema,
-            keep_alive=LLM_KEEP_ALIVE,
-        )["message"]["content"].strip()
-    except TypeError:
-        try:
-            raw = chat(
-                model=MODEL_NAME,
-                messages=messages,
-                options=options,
-                format=schema,
-            )["message"]["content"].strip()
-        except Exception:
-            raw = chat(model=MODEL_NAME, messages=messages, options=options)["message"]["content"].strip()
-    except Exception:
-        raw = chat(model=MODEL_NAME, messages=messages, options=options)["message"]["content"].strip()
-
+    response = _chat_raw(messages, options, schema)
     last_request_time = time.time()
+    raw = (response["message"]["content"] or "").strip()
+    if not raw:
+        logger.warning(
+            "ollama_empty_content model=%s done_reason=%s eval_count=%s — увеличь LLM_NUM_PREDICT или отключи thinking",
+            MODEL_NAME,
+            response.get("done_reason"),
+            response.get("eval_count"),
+        )
     return _safe_json_loads(raw)
 
 
@@ -266,25 +306,8 @@ def build_category_path(category: str, author: str, series: str) -> str:
         return DEFAULT_CATEGORY
 
     if len(parts) >= 2 and parts[0] == "Художественные":
-        author_key = to_ascii_slug(author, fallback="unknown-author")
+        author_key = to_ascii_slug(canonical_author_name(author), fallback="unknown-author")
         series_key = to_ascii_slug(series or "Без серии", fallback="bez-serii")
         return " | ".join([parts[0], parts[1], author_key, series_key])
 
     return " | ".join(parts)
-
-
-def get_metadata(text: str, interrupted_flag: bool | None = None, filename: str = "") -> dict[str, Any]:
-    # Backward-compatible wrapper used by old flow.
-    facts = extract_book_facts(text, filename, interrupted_flag)
-    category = classify_category(text, facts["title"], facts["author"], interrupted_flag)
-    category_path = build_category_path(category["category"], facts["author"], facts.get("series_hint", "Без серии"))
-
-    return {
-        "title": facts["title"],
-        "author": facts["author"],
-        "isbn": facts["isbn"],
-        "series": facts.get("series_hint", ""),
-        "category": category["category"],
-        "category_path": category_path,
-        "confidence": min(1.0, max(facts["confidence"], category["confidence"])),
-    }
