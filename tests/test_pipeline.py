@@ -83,13 +83,16 @@ def test_duplicate_skips_processing(main, tmp_path):
 
 def test_uncertain_book_is_queued_not_copied_to_errors(main, tmp_path, monkeypatch):
     monkeypatch.setattr(main, "classify_category", lambda *a, **k: {
-        "category": "Требует внимания", "confidence": 0.0, "review_reason": "insufficient_category_evidence"
+        "category": "Требует внимания", "confidence": 0.2, "review_reason": "insufficient_category_evidence"
     })
     source = _source(tmp_path)
     extracted = {"status": "error_no_text", "index": 1, "source": source, "isbn": "", "text": "", "error": "", "content_hash": "h"}
     result = main.process_file(extracted, _NoopEnricher(), _options(main, tmp_path))
     assert result["status"] == "needs_review"
     assert result["error_reason"] == "insufficient_category_evidence"
+    assert result["category_confidence"] == 0.2
+    assert result["metadata_confidence"] == 0.0
+    assert result["facts_confidence"] > result["category_confidence"]
     assert Path(result["new_path"]).parent.name == "Требует внимания"
     assert not (tmp_path / "out" / "Errors").exists()
 

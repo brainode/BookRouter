@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS books (
     status TEXT,
     error_reason TEXT,
     new_path TEXT,
-    content_hash TEXT
+    content_hash TEXT,
+    category_confidence REAL,
+    facts_confidence REAL
 );
 """
 
@@ -102,6 +104,8 @@ BOOK_COLUMN_MIGRATIONS = {
     "status": "TEXT",
     "error_reason": "TEXT",
     "content_hash": "TEXT",
+    "category_confidence": "REAL",
+    "facts_confidence": "REAL",
 }
 
 
@@ -159,6 +163,8 @@ class BookDB:
         status: Optional[str] = None,
         error_reason: Optional[str] = None,
         content_hash: Optional[str] = None,
+        category_confidence: Optional[float] = None,
+        facts_confidence: Optional[float] = None,
     ) -> int:
         cursor = self.conn.cursor()
         existing = self.find_book_by_origin(origin_type, origin_path)
@@ -172,7 +178,7 @@ class BookDB:
                     preview_text = ?, title = ?, title_raw = ?, author = ?, author_raw = ?,
                     series = ?, series_index = ?, category = ?, metadata_source = ?,
                     metadata_confidence = ?, provider_match_score = ?, status = ?,
-                    error_reason = ?, new_path = ?, content_hash = ?
+                    error_reason = ?, new_path = ?, content_hash = ?, category_confidence = ?, facts_confidence = ?
                 WHERE id = ?
                 """,
                 (
@@ -200,6 +206,8 @@ class BookDB:
                     error_reason,
                     new_path,
                     content_hash,
+                    category_confidence,
+                    facts_confidence,
                     existing["id"],
                 ),
             )
@@ -214,9 +222,9 @@ class BookDB:
                 preview_text, title, title_raw, author, author_raw,
                 series, series_index, category, metadata_source,
                 metadata_confidence, provider_match_score, status,
-                error_reason, new_path, content_hash
+                error_reason, new_path, content_hash, category_confidence, facts_confidence
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time_added,
@@ -243,6 +251,8 @@ class BookDB:
                 error_reason,
                 new_path,
                 content_hash,
+                category_confidence,
+                facts_confidence,
             ),
         )
         self.conn.commit()

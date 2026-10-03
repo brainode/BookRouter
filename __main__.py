@@ -131,6 +131,8 @@ def _error_result(source: BookSource, index: int, status: str, reason: str, text
         "new_path": "",
         "metadata_source": "error",
         "metadata_confidence": 0.0,
+        "category_confidence": 0.0,
+        "facts_confidence": 0.0,
         "provider_match_score": 0.0,
         "status": status,
         "error_reason": reason,
@@ -282,11 +284,7 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             result["title"] = ""
             return result
 
-        metadata_confidence = max(
-            float(enriched.get("metadata_confidence", 0.0) or 0.0),
-            float(facts.get("confidence", 0.0) or 0.0),
-            float(category_data.get("confidence", 0.0) or 0.0),
-        )
+        metadata_confidence = float(enriched.get("metadata_confidence", 0.0) or 0.0)
         result = {
             "index": index,
             "file_name": source.display_name,
@@ -308,6 +306,8 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "new_path": "",
             "metadata_source": metadata_source,
             "metadata_confidence": metadata_confidence,
+            "category_confidence": float(category_data.get("confidence", 0.0) or 0.0),
+            "facts_confidence": float(facts.get("confidence", 0.0) or 0.0),
             "provider_match_score": float(enriched.get("provider_match_score", 0.0) or 0.0),
             "status": "needs_review" if category_base == DEFAULT_CATEGORY else "ok",
             "error_reason": category_data.get("review_reason", "") if category_base == DEFAULT_CATEGORY else "",
@@ -429,6 +429,8 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         category=result["category"],
         metadata_source=result["metadata_source"],
         metadata_confidence=result["metadata_confidence"],
+        category_confidence=result.get("category_confidence"),
+        facts_confidence=result.get("facts_confidence"),
         provider_match_score=result["provider_match_score"],
         status=result["status"],
         error_reason=result["error_reason"],

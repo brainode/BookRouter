@@ -34,7 +34,7 @@ def resolve_book(db, book_id, category, output_folder, title=None, author=None, 
     try:
         db.conn.execute(
             "UPDATE books SET title = ?, author = ?, series = ?, category = ?, new_path = ?, "
-            "status = 'ok', error_reason = '', metadata_source = 'manual' WHERE id = ?",
+            "status = 'ok', error_reason = '', category_confidence = 1.0, metadata_source = 'manual' WHERE id = ?",
             (title, author, series, category_path, destination, book_id),
         )
         db.conn.commit()

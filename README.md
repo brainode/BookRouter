@@ -93,6 +93,11 @@ Optional `--title`, `--author`, and `--series` correct metadata at confirmation.
 Confirmation copies the book into its category, updates the database, then removes
 the review copy. Original input files are retained.
 
+The database stores `facts_confidence`, `metadata_confidence`, and
+`category_confidence` separately. Existing rows get unknown (`NULL`) values for
+the new scores until reprocessed. Model confidence is a heuristic, not a measured
+probability of correctness; validate the review threshold on representative books.
+
 The repository ships with `.env.example` as a template. Your actual `.env` is ignored by git.
 
 ## Usage

@@ -69,6 +69,15 @@ def test_ok_hashes(db):
     assert db.get_ok_hashes() == {"h1": "p1"}
 
 
+def test_confidence_scores_are_stored_independently(db):
+    book_id = db.upsert_book(**_book_kwargs(metadata_confidence=0.9, facts_confidence=0.4, category_confidence=0.2))
+    row = db.conn.execute("SELECT metadata_confidence, facts_confidence, category_confidence FROM books WHERE id = ?", (book_id,)).fetchone()
+    assert tuple(row) == (0.9, 0.4, 0.2)
+    db.upsert_book(**_book_kwargs(metadata_confidence=0.8, facts_confidence=0.5, category_confidence=0.3))
+    row = db.conn.execute("SELECT metadata_confidence, facts_confidence, category_confidence FROM books WHERE id = ?", (book_id,)).fetchone()
+    assert tuple(row) == (0.8, 0.5, 0.3)
+
+
 def test_migration_adds_columns_to_old_schema(tmp_path):
     import sqlite3
 
