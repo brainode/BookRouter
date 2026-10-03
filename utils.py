@@ -33,9 +33,7 @@ def long_path(path: str) -> str:
 
 
 def file_fingerprint(path: str, edge_bytes: int = 4 * 1024 * 1024) -> str:
-    """Отпечаток для поиска дубликатов: размер + sha1 первых и последних 4 МБ.
-    Полное хеширование тысяч книг заметно удлиняет прогон, а разные книги с совпадающими
-    размером, началом и концом на практике не встречаются."""
+    """Fast candidate filter: size and SHA-1 of the edges; confirm with full SHA-256."""
     full_path = long_path(path)
     size = os.path.getsize(full_path)
     digest = hashlib.sha1()
@@ -93,6 +91,20 @@ CSV_HEADER = [
 def full_file_hash(path: str) -> str:
     with open(long_path(path), "rb") as file:
         return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def find_duplicate(path: str, fingerprint: str, known_hashes: dict[str, list[str]]) -> str | None:
+    candidates = tuple(known_hashes.get(fingerprint, ()))
+    if not candidates:
+        return None
+    source_hash = full_file_hash(path)
+    for candidate in candidates:
+        try:
+            if full_file_hash(candidate) == source_hash:
+                return candidate
+        except OSError as exc:
+            logger.warning("duplicate_candidate_unavailable path=%s error=%s", candidate, exc)
+    return None
 
 
 def atomic_copy(source: str, destination: str) -> str:

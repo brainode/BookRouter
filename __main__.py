@@ -29,7 +29,7 @@ from normalization import extract_first_valid_isbn, is_unknown_label, normalize_
 from preflight import run_preflight
 from reader import OCRConfigError, extract_text_with_ends
 from sources import BookSource, cleanup_source, collect_book_sources, materialize_zip_member
-from utils import append_csv, copy_book_to_category, copy_to_errors, file_fingerprint, long_path, remove_stale_error_copy, source_signature
+from utils import append_csv, copy_book_to_category, copy_to_errors, file_fingerprint, find_duplicate, long_path, remove_stale_error_copy, source_signature
 
 logger = logging.getLogger("bookrouter")
 
@@ -161,7 +161,7 @@ def _duplicate_result(source: BookSource, index: int, content_hash: str, origina
     return result
 
 
-def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, str]):
+def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, list[str]]):
     content_hash = ""
     source_size = source_mtime_ns = None
 
@@ -191,8 +191,9 @@ def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, st
         io_path = source.materialized_path or source.logical_path
         content_hash = file_fingerprint(io_path)
         # Такое же содержимое уже разложено — извлечение и LLM не нужны
-        if content_hash in known_hashes:
-            return _stage_result("duplicate", known_hashes[content_hash])
+        duplicate_path = find_duplicate(io_path, content_hash, known_hashes)
+        if duplicate_path:
+            return _stage_result("duplicate", duplicate_path)
         text_head, text_tail = extract_text_with_ends(io_path, MAX_PAGES, MAX_TAIL_PAGES)
         if not (text_head.strip() or text_tail.strip()):
             return _stage_result("error_no_text", "no_text_extracted")
@@ -345,7 +346,7 @@ def _wait_result(future: concurrent.futures.Future):
                 return None
 
 
-def iter_extracted_files(sources: list[BookSource], known_hashes: dict[str, str]):
+def iter_extracted_files(sources: list[BookSource], known_hashes: dict[str, list[str]]):
     if not sources:
         return
 
@@ -598,7 +599,9 @@ def main(argv: list[str] | None = None):
                 # Дубликат мог появиться уже после того, как поток проверил отпечаток
                 content_hash = extracted.get("content_hash", "")
                 if extracted["status"] != "duplicate" and content_hash in known_hashes:
-                    extracted = {**extracted, "status": "duplicate", "error": known_hashes[content_hash]}
+                    duplicate_path = find_duplicate(source.materialized_path or source.logical_path, content_hash, known_hashes)
+                    if duplicate_path:
+                        extracted = {**extracted, "status": "duplicate", "error": duplicate_path}
 
                 result = process_file(extracted, enricher, options)
                 result["source_size"] = extracted.get("source_size")
@@ -616,7 +619,9 @@ def main(argv: list[str] | None = None):
 
                 book_id = None if options.dry_run else _store_result(db, result, options)
                 if result["status"] == "ok" and content_hash:
-                    known_hashes.setdefault(content_hash, result["new_path"])
+                    candidates = known_hashes.setdefault(content_hash, [])
+                    if result["new_path"] not in candidates:
+                        candidates.append(result["new_path"])
                 if options.dry_run:
                     append_csv(options.output_csv, _csv_row(result))
 

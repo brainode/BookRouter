@@ -324,7 +324,7 @@ class BookDB:
                 ]
         write_results_csv(path, rows())
 
-    def get_ok_hashes(self) -> dict[str, str]:
+    def get_ok_hashes(self) -> dict[str, list[str]]:
         """отпечаток содержимого → путь в библиотеке для успешно разложенных книг."""
         cursor = self.conn.cursor()
         cursor.execute(
@@ -335,10 +335,12 @@ class BookDB:
             ORDER BY id
             """
         )
-        hashes: dict[str, str] = {}
+        hashes: dict[str, list[str]] = {}
         for row in cursor.fetchall():
             if row["new_path"] and os.path.isfile(long_path(row["new_path"])):
-                hashes.setdefault(row["content_hash"], row["new_path"])
+                candidates = hashes.setdefault(row["content_hash"], [])
+                if row["new_path"] not in candidates:
+                    candidates.append(row["new_path"])
         return hashes
 
     def find_book_by_origin(self, origin_type: Optional[str], origin_path: Optional[str]) -> dict | None:

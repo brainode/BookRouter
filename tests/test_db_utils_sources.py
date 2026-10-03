@@ -68,7 +68,7 @@ def test_ok_hashes(db, tmp_path):
     output.write_bytes(b"book")
     db.upsert_book(**_book_kwargs(origin_path="a", content_hash="h1", new_path=str(output)))
     db.upsert_book(**_book_kwargs(origin_path="b", content_hash="h2", status="error_extract"))
-    assert db.get_ok_hashes() == {"h1": str(output)}
+    assert db.get_ok_hashes() == {"h1": [str(output)]}
     output.unlink()
     assert db.get_ok_hashes() == {}
 

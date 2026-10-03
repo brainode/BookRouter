@@ -129,6 +129,10 @@ match the recorded values and the output copy still exists. For ZIP members the
 signature tracks the archive. Legacy rows without a signature are processed once
 to establish it. Size/time checks do not detect changes that preserve both values.
 
+Duplicate detection uses the edge fingerprint as a fast filter, then compares full
+SHA-256 hashes. Different files sharing the same fingerprint stay separate; all
+candidate output copies are considered, including matches processed in this run.
+
 Run the tests:
 
 ```powershell
