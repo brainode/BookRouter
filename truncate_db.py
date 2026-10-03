@@ -7,17 +7,13 @@ from pathlib import Path
 
 
 def get_regular_tables(conn: sqlite3.Connection) -> list[str]:
-    cursor = conn.execute(
-        """
-        SELECT name
-        FROM sqlite_master
-        WHERE type = 'table'
-          AND name NOT LIKE 'sqlite_%'
-          AND (sql IS NULL OR sql NOT LIKE 'CREATE VIRTUAL TABLE%')
-        ORDER BY name
-        """
+    # sqlite_master also lists FTS shadow tables as ordinary tables.
+    # Their contents must be managed by FTS itself via the books triggers.
+    return sorted(
+        row[1]
+        for row in conn.execute("PRAGMA table_list")
+        if row[0] == "main" and row[2] == "table" and not row[1].startswith("sqlite_")
     )
-    return [row[0] for row in cursor.fetchall()]
 
 
 def truncate_db(db_path: Path, vacuum: bool = False) -> None:
@@ -30,9 +26,11 @@ def truncate_db(db_path: Path, vacuum: bool = False) -> None:
         tables = get_regular_tables(conn)
 
         for table in tables:
-            conn.execute(f'DELETE FROM "{table}"')
+            quoted_table = table.replace('"', '""')
+            conn.execute(f'DELETE FROM "{quoted_table}"')
 
-        conn.execute("DELETE FROM sqlite_sequence")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_sequence'").fetchone():
+            conn.execute("DELETE FROM sqlite_sequence")
         conn.commit()
 
         if vacuum:

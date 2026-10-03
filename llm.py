@@ -50,11 +50,38 @@ def _parse_categories(raw_tree: str) -> list[str]:
 
 
 ALLOWED_CATEGORIES = _parse_categories(CATEGORY_TREE)
-DEFAULT_CATEGORY = (
-    "Художественные | Другое"
-    if "Художественные | Другое" in ALLOWED_CATEGORIES
-    else (ALLOWED_CATEGORIES[0] if ALLOWED_CATEGORIES else "Другое")
-)
+DEFAULT_CATEGORY = "Требует внимания"
+
+CATEGORY_RULES = """
+Classify by the book's main subject and purpose, not isolated keywords or example languages.
+Use 'Требует внимания' when evidence is insufficient or no category fits;
+this is the queue for human review.
+IT | AI и ML: training and applying models, neural networks, computer vision and NLP.
+IT | Data Science: preparing, exploring, analyzing and visualizing data; choose AI и ML
+instead when model training or machine learning is the main subject.
+Наука | Математика | Статистика and Теория вероятностей: mathematical foundations
+and statistical inference, even when examples use Python or machine learning.
+IT | Алгоритмы и структуры данных: practical algorithms and data structures,
+regardless of the programming language used in examples.
+Наука | Математика | Теория графов: mathematical graph theory rather than
+implementation of graph algorithms in software.
+IT | Основы информатики: broad computing foundations; prefer a specific category
+when the book focuses on that subject.
+Qt belongs to IT | Разработка ПО | Qt; Node.js belongs to
+IT | Веб-разработка | JavaScript и TypeScript.
+Use IT | Базы данных | SQL for SQL-focused books and IT | Базы данных | Общее
+for database design, database systems and non-SQL databases.
+IT | Информационная безопасность: cybersecurity, cryptography, vulnerabilities
+and ethical hacking. General tips and tricks belong to their actual subject.
+Cheatsheets and reference guides belong to their subject, such as Python or SQL.
+Fiction priorities: explicitly children's literature goes to Детская, including
+children's classics and fantasy. Otherwise prefer the dominant genre (Фэнтези,
+Научная фантастика, Детектив, Ужасы). Use Классика for established literary
+classics without a dominant listed genre, Драма for other dramatic fiction,
+and Художественные | Другое only for fiction that fits none of these.
+Learning English or Spanish belongs to Иностранные языки; the language a book
+is written in does not determine its subject category.
+""".strip()
 
 FACTS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -280,6 +307,7 @@ def classify_category(text: str, title: str, author: str, interrupted_flag: bool
         "You are a strict book classifier.\n"
         "Choose one category from the provided list.\n"
         "No extra explanations.\n"
+        f"Classification rules:\n{CATEGORY_RULES}\n\n"
         f"Allowed categories:\n{categories_text}"
     )
     model_data = _chat_json(system_prompt, prompt, CATEGORY_SCHEMA)
@@ -295,6 +323,10 @@ def classify_category(text: str, title: str, author: str, interrupted_flag: bool
                 break
         else:
             category = DEFAULT_CATEGORY
+            confidence = 0.0
+
+    if category == DEFAULT_CATEGORY:
+        confidence = 0.0
 
     return {"category": category, "confidence": confidence}
 

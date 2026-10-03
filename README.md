@@ -71,6 +71,13 @@ Important variables:
 
 All other tunables (page counts, OCR timeouts, LLM options, ZIP limits, logging) and their defaults are listed in `config.py`.
 
+Book categories are defined in `CATEGORY_TREE` in `config.py`, with classification
+rules in `llm.py`. Categories follow the main subject: cheatsheets stay with their
+subject, mathematical foundations stay under Science / Mathematics, and uncertain
+results go to `Требует внимания` for manual review. Fiction keeps genre / author / series folders.
+Changing categories affects newly processed or retried books. Books already marked
+as finished in the database and their existing output files are not reorganized.
+
 The repository ships with `.env.example` as a template. Your actual `.env` is ignored by git.
 
 ## Usage
