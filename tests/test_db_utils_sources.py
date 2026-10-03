@@ -78,6 +78,20 @@ def test_confidence_scores_are_stored_independently(db):
     assert tuple(row) == (0.8, 0.5, 0.3)
 
 
+def test_csv_export_reflects_current_database_without_duplicate_rows(db, tmp_path):
+    import csv
+    db.upsert_book(**_book_kwargs(title="Before", category_confidence=0.2))
+    path = tmp_path / "results.csv"
+    db.export_results(str(path))
+    db.upsert_book(**_book_kwargs(title="After", category_confidence=0.9))
+    db.export_results(str(path))
+    with path.open(encoding="utf-8", newline="") as file:
+        rows = list(csv.reader(file, delimiter="|"))
+    assert len(rows) == 2
+    assert rows[1][3] == "After"
+    assert rows[1][16] == "0.9"
+
+
 def test_migration_adds_columns_to_old_schema(tmp_path):
     import sqlite3
 

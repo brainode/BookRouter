@@ -437,8 +437,10 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         new_path=str(result["new_path"]).replace("/", "\\"),
         content_hash=result.get("content_hash") or None,
     )
-    if result["status"] in ("ok", "duplicate") and previous:
-        remove_stale_error_copy(previous.get("new_path") or "", options.output_folder)
+    if result["status"] in ("ok", "duplicate", "needs_review") and previous:
+        old_path = previous.get("new_path") or ""
+        if os.path.normcase(os.path.abspath(old_path)) != os.path.normcase(os.path.abspath(result["new_path"] or "")):
+            remove_stale_error_copy(old_path, options.output_folder, include_review=previous["status"] == "needs_review")
     return book_id
 
 
@@ -461,6 +463,8 @@ def _csv_row(result: dict) -> list:
         result["archive_member"],
         text[:CSV_TEXT_LIMIT],
         result["new_path"],
+        result.get("category_confidence"),
+        result.get("facts_confidence"),
     ]
 
 
@@ -595,7 +599,8 @@ def main(argv: list[str] | None = None):
                 book_id = None if options.dry_run else _store_result(db, result, options)
                 if result["status"] == "ok" and content_hash:
                     known_hashes.setdefault(content_hash, result["new_path"])
-                append_csv(options.output_csv, _csv_row(result))
+                if options.dry_run:
+                    append_csv(options.output_csv, _csv_row(result))
 
                 status_counts[result["status"]] += 1
                 if result["status"] == "ok":
@@ -614,16 +619,28 @@ def main(argv: list[str] | None = None):
                 )
             except Exception as exc:
                 runtime_logger.exception("Ошибка сохранения результата index=%s error=%s", extracted.get("index"), exc)
+                processed_errors += 1
+                status_counts["error_persist"] += 1
+                reason_counts["error_persist: " + _reason_key(str(exc))] += 1
+                fatal_error = f"result_persistence_failed:{exc}"
+                stop_event.set()
+                break
             finally:
                 cleanup_source(source)
     finally:
         extracted_iter.close()
+        if not options.dry_run:
+            try:
+                db.export_results(options.output_csv)
+            except Exception as exc:
+                runtime_logger.exception("Ошибка экспорта CSV: %s", exc)
+                fatal_error = fatal_error or f"csv_export_failed:{exc}"
         db.close()
         runtime_logger.debug("Database connection closed")
 
     if fatal_error:
-        print(f"⛔ Ошибка окружения: {fatal_error}")
-        print("   Обработка остановлена, текущая книга не сохранена. Исправь настройку и запусти снова.")
+        print(f"⛔ Ошибка выполнения: {fatal_error}")
+        print("   Проверь журнал. Сохранённые записи остаются в БД; CSV можно восстановить командой export_results.py.")
     elif stop_event.is_set():
         print("⛔ Обработка прервана пользователем. Необработанные книги будут взяты при следующем запуске.")
 
@@ -654,3 +671,4 @@ if __name__ == "__main__":
         print("\n⛔ Программа прервана пользователем")
     except Exception as exc:
         logging.getLogger("bookrouter").exception("Критическая ошибка: %s", exc)
+        sys.exit(1)

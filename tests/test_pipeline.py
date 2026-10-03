@@ -114,3 +114,36 @@ def test_review_only_selection(main, tmp_path):
         assert main._select_sources([source], db, options, main.logger)[0] == [source]
     finally:
         db.close()
+
+
+@pytest.mark.parametrize("failure", ["database", "csv"])
+def test_persistence_failure_returns_nonzero(main, tmp_path, monkeypatch, failure):
+    monkeypatch.chdir(tmp_path)
+    main.stop_event.clear()
+    source = _source(tmp_path)
+    monkeypatch.setattr(main, "setup_logging", lambda: main.logger)
+    monkeypatch.setattr(main, "install_print_logging", lambda logger: None)
+    monkeypatch.setattr(main.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(main, "collect_book_sources", lambda *a, **k: ([source], {}))
+    monkeypatch.setattr(main, "run_preflight", lambda *args: [])
+    monkeypatch.setattr(main, "warm_up_model", lambda: 0)
+    monkeypatch.setattr(main, "iter_extracted_files", lambda *args: iter_generator())
+
+    def iter_generator():
+        yield {"source": source, "status": "ok", "index": 1}
+
+    monkeypatch.setattr(main, "process_file", lambda *args: main._error_result(source, 1, "needs_review", "review"))
+
+    def fail(*args, **kwargs):
+        raise OSError("injected persistence failure")
+
+    if failure == "database":
+        monkeypatch.setattr(main, "_store_result", fail)
+    else:
+        monkeypatch.setattr(main.BookDB, "export_results", fail)
+    try:
+        with pytest.raises(SystemExit) as exc:
+            main.main(["--input", str(tmp_path), "--output", str(tmp_path / "out")])
+        assert exc.value.code == 1
+    finally:
+        main.stop_event.clear()

@@ -116,6 +116,14 @@ Ctrl+C stops after the current page; unfinished books are picked up on the next 
 
 The run ends with a summary of statuses and the most frequent error reasons. Failed books are copied to `<OUTPUT>/Errors`, and every result is written to `results.csv` and `books.db`.
 
+SQLite is the source of truth. At the end of a real run, `results.csv` is atomically
+replaced with the current database contents (one row per source), including separate
+confidence scores. Restore it anytime with `python export_results.py`; manual review
+confirmation also refreshes the export. Dry runs append to `results.dry-run.csv`.
+Copies are published by atomic rename and identical existing copies are reused after
+a retry. Persistence failures stop the run with exit code 1; completed DB entries
+remain available even if CSV export fails.
+
 Run the tests:
 
 ```powershell

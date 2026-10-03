@@ -40,9 +40,10 @@ def resolve_book(db, book_id, category, output_folder, title=None, author=None, 
         db.conn.commit()
     except Exception:
         db.conn.rollback()
-        Path(destination).unlink(missing_ok=True)
+        # Leave the complete copy for an idempotent retry; it may have existed before.
         raise
     source.unlink()
+    db.export_results(str(Path(db.db_file).resolve().parent / "results.csv"))
     return destination
 
 

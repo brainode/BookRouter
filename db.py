@@ -5,6 +5,8 @@ import sqlite3
 import time
 from typing import Optional, Tuple
 
+from utils import write_results_csv
+
 DB_FILE = "books.db"
 
 CREATE_TABLE_SQL = """
@@ -289,6 +291,18 @@ class BookDB:
         return {(row["origin_type"] or "", row["origin_path"] or "") for row in self.conn.execute(
             "SELECT origin_type, origin_path FROM books WHERE status = 'needs_review'"
         )}
+
+    def export_results(self, path: str = "results.csv"):
+        def rows():
+            for row in self.conn.execute("SELECT * FROM books ORDER BY id"):
+                yield [
+                    row["id"], row["original_filename"], row["isbn"], row["title"], row["author"],
+                    row["series"], row["category"], row["metadata_source"], row["metadata_confidence"],
+                    row["status"], row["error_reason"], row["origin_type"], row["archive_path"],
+                    row["archive_member"], " ".join((row["preview_text"] or "").split())[:300],
+                    row["new_path"], row["category_confidence"], row["facts_confidence"],
+                ]
+        write_results_csv(path, rows())
 
     def get_ok_hashes(self) -> dict[str, str]:
         """отпечаток содержимого → путь в библиотеке для успешно разложенных книг."""

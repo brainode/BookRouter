@@ -3,6 +3,10 @@
 
 from pathlib import Path
 
+import pytest
+
+import utils
+
 from utils import copy_book_to_category
 
 
@@ -25,3 +29,46 @@ def test_fiction_author_variants_still_reuse_folder(tmp_path):
     author_folder.mkdir(parents=True)
     result = copy_book_to_category(str(source), "Book", "Author", "Художественные | Детская | ivan-petrov | bez-serii", str(output))
     assert Path(result).parent.parent == author_folder
+
+
+def test_copy_retry_reuses_complete_identical_file(tmp_path):
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"book")
+    output = tmp_path / "out"
+    first = copy_book_to_category(str(source), "Book", "Author", "IT | Data Science", str(output))
+    second = copy_book_to_category(str(source), "Book", "Author", "IT | Data Science", str(output))
+    assert first == second
+    assert len(list(Path(first).parent.iterdir())) == 1
+    source.write_bytes(b"diff")
+    third = copy_book_to_category(str(source), "Book", "Author", "IT | Data Science", str(output))
+    assert third != first
+    assert Path(first).read_bytes() == b"book"
+
+
+def test_failed_copy_never_publishes_partial_file(tmp_path, monkeypatch):
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"book")
+    destination = tmp_path / "out" / "book.pdf"
+
+    def fail(src, dst):
+        Path(dst).write_bytes(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(utils.shutil, "copy2", fail)
+    with pytest.raises(OSError, match="disk full"):
+        utils.atomic_copy(str(source), str(destination))
+    assert list(destination.parent.iterdir()) == []
+
+
+def test_failed_csv_export_keeps_previous_snapshot(tmp_path):
+    path = tmp_path / "results.csv"
+    path.write_text("previous", encoding="utf-8")
+
+    def rows():
+        yield ["partial"]
+        raise OSError("failed to read database")
+
+    with pytest.raises(OSError):
+        utils.write_results_csv(str(path), rows())
+    assert path.read_text(encoding="utf-8") == "previous"
+    assert list(tmp_path.iterdir()) == [path]

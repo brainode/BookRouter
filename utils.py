@@ -8,6 +8,8 @@ import logging
 import os
 import re
 import shutil
+import stat
+import tempfile
 
 from config import ERRORS_SUBFOLDER, PATH_ALIAS_THRESHOLD
 from normalization import normalize_for_match, token_key
@@ -75,31 +77,70 @@ def _strip_errors_prefix(relative: str) -> str:
     return "/".join(parts)
 
 
+CSV_HEADER = [
+    "№", "Файл", "ISBN", "Название", "Автор", "Серия", "Категория", "Источник",
+    "Уверенность метаданных", "Статус", "Причина ошибки или проверки", "Тип источника",
+    "Путь архива", "Элемент архива", "Текст", "Новый путь", "Уверенность категории", "Уверенность извлечения",
+]
+
+
+def full_file_hash(path: str) -> str:
+    with open(long_path(path), "rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def atomic_copy(source: str, destination: str) -> str:
+    """Reuse identical copies; publish only complete files in the destination directory."""
+    os.makedirs(long_path(os.path.dirname(destination)), exist_ok=True)
+    candidate = destination
+    stem, ext = os.path.splitext(destination)
+    counter = 2
+    source_hash = None
+    while os.path.exists(long_path(candidate)):
+        if os.path.isfile(long_path(candidate)) and os.path.getsize(long_path(candidate)) == os.path.getsize(long_path(source)):
+            source_hash = source_hash or full_file_hash(source)
+            if full_file_hash(candidate) == source_hash:
+                return candidate
+        candidate = f"{stem} ({counter}){ext}"
+        counter += 1
+    fd, temp_path = tempfile.mkstemp(prefix=".bookrouter-", suffix=".tmp", dir=long_path(os.path.dirname(candidate)))
+    os.close(fd)
+    try:
+        shutil.copy2(long_path(source), temp_path)
+        os.chmod(temp_path, stat.S_IREAD | stat.S_IWRITE)
+        with open(temp_path, "r+b") as file:
+            os.fsync(file.fileno())
+        shutil.copystat(long_path(source), temp_path)
+        os.replace(temp_path, long_path(candidate))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    return candidate
+
+
+def write_results_csv(path: str, rows):
+    """Atomically replace an export; preserve the previous export on failure."""
+    destination = os.path.abspath(path)
+    fd, temp_path = tempfile.mkstemp(prefix=".results-", suffix=".tmp", dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
+            writer = csv.writer(file, delimiter="|")
+            writer.writerow(CSV_HEADER)
+            writer.writerows(rows)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, destination)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
 def append_csv(path: str, row):
     write_header = not os.path.exists(path)
     with open(path, mode="a", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter="|")
         if write_header:
-            writer.writerow(
-                [
-                    "№",
-                    "Файл",
-                    "ISBN",
-                    "Название",
-                    "Автор",
-                    "Серия",
-                    "Категория",
-                    "Источник",
-                    "Уверенность",
-                    "Статус",
-                    "Причина ошибки",
-                    "Тип источника",
-                    "Путь архива",
-                    "Элемент архива",
-                    "Текст",
-                    "Новый путь",
-                ]
-            )
+            writer.writerow(CSV_HEADER)
         writer.writerow(row)
 
 
@@ -196,7 +237,7 @@ def copy_to_errors(source, output_folder: str, reason: str, dry_run: bool = Fals
         return destination
 
     os.makedirs(long_path(os.path.dirname(destination)), exist_ok=True)
-    if os.path.isfile(long_path(destination)) and os.path.getsize(long_path(destination)) == os.path.getsize(long_path(src)):
+    if os.path.isfile(long_path(destination)) and os.path.getsize(long_path(destination)) == os.path.getsize(long_path(src)) and full_file_hash(destination) == full_file_hash(src):
         # Повторная обработка той же книги: копия уже лежит в Errors
         logger.error(
             "error_fallback_reused reason=%s origin=%s source=%s destination=%s",
@@ -206,10 +247,8 @@ def copy_to_errors(source, output_folder: str, reason: str, dry_run: bool = Fals
             destination,
         )
         return destination
-    destination = make_unique_destination(destination)
-
     try:
-        shutil.copy2(long_path(src), long_path(destination))
+        destination = atomic_copy(src, destination)
         logger.error(
             "error_fallback_copy reason=%s origin=%s source=%s destination=%s archive=%s member=%s",
             reason,
@@ -232,13 +271,14 @@ def copy_to_errors(source, output_folder: str, reason: str, dry_run: bool = Fals
         return ""
 
 
-def remove_stale_error_copy(old_path: str, output_folder: str):
+def remove_stale_error_copy(old_path: str, output_folder: str, include_review: bool = False):
     """После успешной переобработки удаляет прежнюю копию книги из Errors (только внутри OUTPUT/Errors)."""
     if not old_path or not output_folder:
         return
-    errors_root = os.path.normcase(os.path.abspath(os.path.join(output_folder, ERRORS_SUBFOLDER)))
-    candidate = os.path.normcase(os.path.abspath(old_path))
-    if not candidate.startswith(errors_root + os.sep) or not os.path.isfile(long_path(old_path)):
+    folders = [ERRORS_SUBFOLDER] + (["Требует внимания"] if include_review else [])
+    roots = [os.path.normcase(os.path.realpath(os.path.join(output_folder, folder))) for folder in folders]
+    candidate = os.path.normcase(os.path.realpath(old_path))
+    if not any(candidate.startswith(root + os.sep) for root in roots) or not os.path.isfile(long_path(old_path)):
         return
     try:
         os.remove(long_path(old_path))
@@ -290,8 +330,7 @@ def copy_book_to_category(
 
     try:
         os.makedirs(long_path(category_folder), exist_ok=True)
-        destination = make_unique_destination(destination)
-        shutil.copy2(long_path(file_path), long_path(destination))
+        destination = atomic_copy(file_path, destination)
         print(f"📂 Категория: {' | '.join(category_path_parts)}")
         return destination
     except Exception as e:
