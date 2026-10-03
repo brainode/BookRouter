@@ -3,7 +3,6 @@
 
 import json
 import time
-from difflib import SequenceMatcher
 from typing import Any
 
 from config import (
@@ -16,17 +15,11 @@ from config import (
 )
 from normalization import (
     is_unknown_label,
-    normalize_for_match,
     normalize_isbn,
     normalize_spaces,
 )
 from providers import GoogleBooksProvider, OpenLibraryProvider, ProviderResult
-
-
-def _ratio(left: str, right: str) -> float:
-    if not left or not right:
-        return 0.0
-    return SequenceMatcher(None, left, right).ratio()
+from providers.base import score_candidate
 
 
 class MetadataEnricher:
@@ -95,15 +88,10 @@ class MetadataEnricher:
         )
 
     def _score_result(self, result: ProviderResult, title: str, author: str) -> ProviderResult:
-        title_score = _ratio(normalize_for_match(title), normalize_for_match(result.title))
-        author_score = _ratio(normalize_for_match(author), normalize_for_match(result.author))
-        if author and not result.author:
-            author_score = 0.0
-        result.match_score = round(title_score * 0.7 + author_score * 0.3, 4)
-        return result
+        return score_candidate(result, title, author)
 
     def _lookup_isbn(self, isbn: str) -> ProviderResult | None:
-        key = f"isbn:{isbn}"
+        key = f"v2:isbn:{isbn}"
         cached = self._cache_get(key)
         if cached:
             return cached
@@ -111,7 +99,7 @@ class MetadataEnricher:
         for provider in self.providers:
             for _ in range(self.retry_count):
                 result = provider.lookup_by_isbn(isbn)
-                if result and not result.is_empty:
+                if result and not result.is_empty and normalize_isbn(result.isbn) == isbn:
                     result.match_score = 1.0
                     self._cache_set(key, result)
                     return result
@@ -119,9 +107,9 @@ class MetadataEnricher:
         return None
 
     def _lookup_title_author(self, title: str, author: str) -> ProviderResult | None:
-        key = f"title_author:{normalize_for_match(title)}|{normalize_for_match(author)}"
+        key = "v2:title_author:" + json.dumps([title.casefold(), author.casefold()], ensure_ascii=False)
         cached = self._cache_get(key)
-        if cached:
+        if cached and self._score_result(cached, title, author).match_score >= self.min_match_score:
             return cached
 
         candidates: list[ProviderResult] = []
@@ -140,7 +128,7 @@ class MetadataEnricher:
             key=lambda item: (item.match_score, item.confidence),
             reverse=True,
         )[0]
-        if best.match_score >= self.min_match_score or best.confidence >= 0.9:
+        if best.match_score >= self.min_match_score:
             self._cache_set(key, best)
             return best
         return None
@@ -171,7 +159,7 @@ class MetadataEnricher:
         if not author or is_unknown_label(author):
             author = external.author or raw_author
 
-        isbn_value = normalize_isbn(external.isbn) or raw_isbn
+        isbn_value = raw_isbn or normalize_isbn(external.isbn)
         series_value = normalize_spaces(external.series) or series_hint
 
         return {
@@ -192,6 +180,8 @@ class MetadataEnricher:
         isbn = normalize_isbn(str(raw.get("isbn", "")))
         title = normalize_spaces(str(raw.get("title", "")))
         author = normalize_spaces(str(raw.get("author", "")))
+        if is_unknown_label(author):
+            author = ""
 
         external: ProviderResult | None = None
         if isbn:

@@ -133,6 +133,11 @@ Duplicate detection uses the edge fingerprint as a fast filter, then compares fu
 SHA-256 hashes. Different files sharing the same fingerprint stay separate; all
 candidate output copies are considered, including matches processed in this run.
 
+Catalog title searches score all returned candidates by title and author. They do
+not infer an edition's ISBN from a work-level title match. ISBN searches require
+matching identifiers, and an original valid ISBN is retained. The revised lookup
+uses a new cache namespace, leaving older cached matches unused.
+
 Run the tests:
 
 ```powershell
