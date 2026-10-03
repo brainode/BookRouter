@@ -47,6 +47,12 @@ def file_fingerprint(path: str, edge_bytes: int = 4 * 1024 * 1024) -> str:
     return f"{size}:{digest.hexdigest()}"
 
 
+def source_signature(source) -> tuple[int, int]:
+    path = source.archive_path if source.origin_type == "zip" else source.logical_path
+    info = os.stat(long_path(path))
+    return info.st_size, info.st_mtime_ns
+
+
 def sanitize_filename(name: str, max_len: int = MAX_NAME_LEN) -> str:
     value = re.sub(r'[\\/*?:"<>|\x00-\x1f]', "-", str(name))
     value = re.sub(r"\s+", " ", value).strip()

@@ -63,10 +63,14 @@ def test_origin_keys_skip_only_finished(db):
     assert len(db.get_all_origin_keys(only_ok=False)) == 3
 
 
-def test_ok_hashes(db):
-    db.upsert_book(**_book_kwargs(origin_path="a", content_hash="h1", new_path="p1"))
+def test_ok_hashes(db, tmp_path):
+    output = tmp_path / "p1"
+    output.write_bytes(b"book")
+    db.upsert_book(**_book_kwargs(origin_path="a", content_hash="h1", new_path=str(output)))
     db.upsert_book(**_book_kwargs(origin_path="b", content_hash="h2", status="error_extract"))
-    assert db.get_ok_hashes() == {"h1": "p1"}
+    assert db.get_ok_hashes() == {"h1": str(output)}
+    output.unlink()
+    assert db.get_ok_hashes() == {}
 
 
 def test_confidence_scores_are_stored_independently(db):

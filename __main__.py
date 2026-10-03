@@ -29,7 +29,7 @@ from normalization import extract_first_valid_isbn, is_unknown_label, normalize_
 from preflight import run_preflight
 from reader import OCRConfigError, extract_text_with_ends
 from sources import BookSource, cleanup_source, collect_book_sources, materialize_zip_member
-from utils import append_csv, copy_book_to_category, copy_to_errors, file_fingerprint, remove_stale_error_copy
+from utils import append_csv, copy_book_to_category, copy_to_errors, file_fingerprint, long_path, remove_stale_error_copy, source_signature
 
 logger = logging.getLogger("bookrouter")
 
@@ -163,6 +163,7 @@ def _duplicate_result(source: BookSource, index: int, content_hash: str, origina
 
 def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, str]):
     content_hash = ""
+    source_size = source_mtime_ns = None
 
     def _stage_result(status: str, error: str = "", isbn: str = "", text: str = "") -> dict:
         return {
@@ -173,6 +174,8 @@ def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, st
             "text": text,
             "error": error,
             "content_hash": content_hash,
+            "source_size": source_size,
+            "source_mtime_ns": source_mtime_ns,
         }
 
     if stop_event.is_set():
@@ -180,10 +183,10 @@ def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, st
 
     print(f"📄 Извлечение {index}: {source.display_name}")
 
-    if source.status_hint != "ready":
-        return _stage_result(source.status_hint, source.error_reason or "source_not_ready")
-
     try:
+        source_size, source_mtime_ns = source_signature(source)
+        if source.status_hint != "ready":
+            return _stage_result(source.status_hint, source.error_reason or "source_not_ready")
         source = materialize_zip_member(source)
         io_path = source.materialized_path or source.logical_path
         content_hash = file_fingerprint(io_path)
@@ -431,6 +434,8 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         metadata_confidence=result["metadata_confidence"],
         category_confidence=result.get("category_confidence"),
         facts_confidence=result.get("facts_confidence"),
+        source_size=result.get("source_size"),
+        source_mtime_ns=result.get("source_mtime_ns"),
         provider_match_score=result["provider_match_score"],
         status=result["status"],
         error_reason=result["error_reason"],
@@ -492,6 +497,7 @@ def _select_sources(sources: list[BookSource], db: BookDB | None, options: RunOp
 
     skipped_existing = 0
     existing_origin_keys = db.get_all_origin_keys(only_ok=options.retry_errors) if db else set()
+    source_states = db.get_source_states() if db else {}
     if options.review_only:
         review_keys = db.get_review_origin_keys() if db else set()
         sources = [source for source in sources if _normalized_origin_key(source) in review_keys]
@@ -499,7 +505,17 @@ def _select_sources(sources: list[BookSource], db: BookDB | None, options: RunOp
     if existing_origin_keys:
         filtered_sources: list[BookSource] = []
         for source in sources:
-            if _normalized_origin_key(source) in existing_origin_keys:
+            key = _normalized_origin_key(source)
+            state = source_states.get(key, {})
+            unchanged = False
+            if key in existing_origin_keys:
+                try:
+                    unchanged = source_signature(source) == (state.get("source_size"), state.get("source_mtime_ns"))
+                except OSError:
+                    pass
+                if state.get("status") in ("ok", "duplicate", "needs_review"):
+                    unchanged = unchanged and bool(state.get("new_path")) and os.path.isfile(long_path(state["new_path"]))
+            if key in existing_origin_keys and unchanged:
                 skipped_existing += 1
                 runtime_logger.debug(
                     "skip_already_processed origin_type=%s origin_path=%s display=%s",
@@ -585,6 +601,8 @@ def main(argv: list[str] | None = None):
                     extracted = {**extracted, "status": "duplicate", "error": known_hashes[content_hash]}
 
                 result = process_file(extracted, enricher, options)
+                result["source_size"] = extracted.get("source_size")
+                result["source_mtime_ns"] = extracted.get("source_mtime_ns")
                 if result["status"] == "interrupted":
                     break
 

@@ -124,6 +124,11 @@ Copies are published by atomic rename and identical existing copies are reused a
 a retry. Persistence failures stop the run with exit code 1; completed DB entries
 remain available even if CSV export fails.
 
+Completed sources are skipped only while their size and modification timestamp
+match the recorded values and the output copy still exists. For ZIP members the
+signature tracks the archive. Legacy rows without a signature are processed once
+to establish it. Size/time checks do not detect changes that preserve both values.
+
 Run the tests:
 
 ```powershell

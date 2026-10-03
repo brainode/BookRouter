@@ -104,8 +104,8 @@ def test_review_only_selection(main, tmp_path):
         source = _source(tmp_path)
         key = main._normalized_origin_key(source)
         db.conn.execute(
-            "INSERT INTO books(time_added, original_filename, original_path, origin_type, origin_path, status) "
-            "VALUES ('now', 'book.pdf', ?, ?, ?, 'needs_review')", (key[1], key[0], key[1])
+            "INSERT INTO books(time_added, original_filename, original_path, origin_type, origin_path, status, new_path, source_size, source_mtime_ns) "
+            "VALUES ('now', 'book.pdf', ?, ?, ?, 'needs_review', ?, ?, ?)", (key[1], key[0], key[1], key[1], *main.source_signature(source))
         )
         db.conn.commit()
         options = _options(main, tmp_path)
@@ -147,3 +147,39 @@ def test_persistence_failure_returns_nonzero(main, tmp_path, monkeypatch, failur
         assert exc.value.code == 1
     finally:
         main.stop_event.clear()
+
+
+@pytest.mark.parametrize("change", ["none", "source", "output", "legacy"])
+def test_skip_checks_source_and_output(main, tmp_path, change):
+    from db import BookDB
+    source = _source(tmp_path)
+    output = tmp_path / "sorted.pdf"
+    output.write_bytes(b"%PDF-1.4")
+    key = main._normalized_origin_key(source)
+    size, mtime = main.source_signature(source)
+    db = BookDB(str(tmp_path / "books.db"))
+    try:
+        db.conn.execute(
+            "INSERT INTO books(time_added, original_filename, original_path, origin_type, origin_path, status, new_path, source_size, source_mtime_ns) "
+            "VALUES ('now', 'book.pdf', ?, ?, ?, 'ok', ?, ?, ?)",
+            (key[1], key[0], key[1], str(output), None if change == "legacy" else size, mtime),
+        )
+        db.conn.commit()
+        if change == "source":
+            Path(source.logical_path).write_bytes(b"replacement PDF")
+        elif change == "output":
+            output.unlink()
+        selected, skipped = main._select_sources([source], db, _options(main, tmp_path), main.logger)
+        assert selected == ([] if change == "none" else [source])
+        assert skipped == (1 if change == "none" else 0)
+    finally:
+        db.close()
+
+
+def test_zip_signature_tracks_archive(main, tmp_path):
+    archive = tmp_path / "books.zip"
+    archive.write_bytes(b"archive")
+    source = BookSource(display_name="book.pdf", materialized_path="", origin_type="zip", archive_path=str(archive), logical_path="zip://books.zip!book.pdf")
+    before = main.source_signature(source)
+    archive.write_bytes(b"changed archive")
+    assert main.source_signature(source) != before

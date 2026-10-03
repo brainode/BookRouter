@@ -3,9 +3,10 @@
 
 import sqlite3
 import time
+import os
 from typing import Optional, Tuple
 
-from utils import write_results_csv
+from utils import long_path, write_results_csv
 
 DB_FILE = "books.db"
 
@@ -37,7 +38,9 @@ CREATE TABLE IF NOT EXISTS books (
     new_path TEXT,
     content_hash TEXT,
     category_confidence REAL,
-    facts_confidence REAL
+    facts_confidence REAL,
+    source_size INTEGER,
+    source_mtime_ns INTEGER
 );
 """
 
@@ -108,6 +111,8 @@ BOOK_COLUMN_MIGRATIONS = {
     "content_hash": "TEXT",
     "category_confidence": "REAL",
     "facts_confidence": "REAL",
+    "source_size": "INTEGER",
+    "source_mtime_ns": "INTEGER",
 }
 
 
@@ -167,6 +172,8 @@ class BookDB:
         content_hash: Optional[str] = None,
         category_confidence: Optional[float] = None,
         facts_confidence: Optional[float] = None,
+        source_size: Optional[int] = None,
+        source_mtime_ns: Optional[int] = None,
     ) -> int:
         cursor = self.conn.cursor()
         existing = self.find_book_by_origin(origin_type, origin_path)
@@ -180,7 +187,8 @@ class BookDB:
                     preview_text = ?, title = ?, title_raw = ?, author = ?, author_raw = ?,
                     series = ?, series_index = ?, category = ?, metadata_source = ?,
                     metadata_confidence = ?, provider_match_score = ?, status = ?,
-                    error_reason = ?, new_path = ?, content_hash = ?, category_confidence = ?, facts_confidence = ?
+                    error_reason = ?, new_path = ?, content_hash = ?, category_confidence = ?, facts_confidence = ?,
+                    source_size = ?, source_mtime_ns = ?
                 WHERE id = ?
                 """,
                 (
@@ -210,6 +218,8 @@ class BookDB:
                     content_hash,
                     category_confidence,
                     facts_confidence,
+                    source_size,
+                    source_mtime_ns,
                     existing["id"],
                 ),
             )
@@ -224,9 +234,9 @@ class BookDB:
                 preview_text, title, title_raw, author, author_raw,
                 series, series_index, category, metadata_source,
                 metadata_confidence, provider_match_score, status,
-                error_reason, new_path, content_hash, category_confidence, facts_confidence
+                error_reason, new_path, content_hash, category_confidence, facts_confidence, source_size, source_mtime_ns
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time_added,
@@ -255,6 +265,8 @@ class BookDB:
                 content_hash,
                 category_confidence,
                 facts_confidence,
+                source_size,
+                source_mtime_ns,
             ),
         )
         self.conn.commit()
@@ -292,6 +304,14 @@ class BookDB:
             "SELECT origin_type, origin_path FROM books WHERE status = 'needs_review'"
         )}
 
+    def get_source_states(self) -> dict[tuple[str, str], dict]:
+        return {
+            (row["origin_type"] or "", row["origin_path"] or ""): dict(row)
+            for row in self.conn.execute(
+                "SELECT origin_type, origin_path, status, new_path, source_size, source_mtime_ns FROM books ORDER BY id"
+            )
+        }
+
     def export_results(self, path: str = "results.csv"):
         def rows():
             for row in self.conn.execute("SELECT * FROM books ORDER BY id"):
@@ -317,7 +337,8 @@ class BookDB:
         )
         hashes: dict[str, str] = {}
         for row in cursor.fetchall():
-            hashes.setdefault(row["content_hash"], row["new_path"] or "")
+            if row["new_path"] and os.path.isfile(long_path(row["new_path"])):
+                hashes.setdefault(row["content_hash"], row["new_path"])
         return hashes
 
     def find_book_by_origin(self, origin_type: Optional[str], origin_path: Optional[str]) -> dict | None:
