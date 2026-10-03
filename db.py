@@ -270,10 +270,15 @@ class BookDB:
             SELECT origin_type, origin_path
             FROM books
             WHERE origin_path IS NOT NULL AND origin_path != ''
-            {"AND status IN ('ok', 'duplicate')" if only_ok else ""}
+            {"AND status IN ('ok', 'duplicate', 'needs_review')" if only_ok else ""}
             """
         )
         return {(str(row["origin_type"] or ""), str(row["origin_path"] or "")) for row in cursor.fetchall()}
+
+    def get_review_origin_keys(self) -> set[tuple[str, str]]:
+        return {(row["origin_type"] or "", row["origin_path"] or "") for row in self.conn.execute(
+            "SELECT origin_type, origin_path FROM books WHERE status = 'needs_review'"
+        )}
 
     def get_ok_hashes(self) -> dict[str, str]:
         """отпечаток содержимого → путь в библиотеке для успешно разложенных книг."""

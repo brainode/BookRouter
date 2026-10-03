@@ -78,6 +78,21 @@ results go to `Требует внимания` for manual review. Fiction keeps
 Changing categories affects newly processed or retried books. Books already marked
 as finished in the database and their existing output files are not reorganized.
 
+Books awaiting review have status `needs_review`, a reason, and a separate summary
+count. Ordinary runs leave them queued. `CATEGORY_MIN_CONFIDENCE` (default `0.6`)
+also sends low-confidence classifications to review; this threshold is a heuristic.
+Use `python __main__.py --review-only` to retry the queue with the model, or confirm
+a decision without the model:
+
+```powershell
+python review_books.py
+python review_books.py --resolve 12 --category "IT | Языки программирования | Python"
+```
+
+Optional `--title`, `--author`, and `--series` correct metadata at confirmation.
+Confirmation copies the book into its category, updates the database, then removes
+the review copy. Original input files are retained.
+
 The repository ships with `.env.example` as a template. Your actual `.env` is ignored by git.
 
 ## Usage

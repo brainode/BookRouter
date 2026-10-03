@@ -22,7 +22,7 @@ from config import (
 )
 from db import BookDB
 from interrupt import Interrupted, stop_event
-from llm import LLMUnavailableError, build_category_path, classify_category, extract_book_facts, warm_up_model
+from llm import DEFAULT_CATEGORY, LLMUnavailableError, build_category_path, classify_category, extract_book_facts, warm_up_model
 from logging_utils import install_print_logging, setup_logging
 from metadata_enricher import MetadataEnricher
 from normalization import extract_first_valid_isbn, is_unknown_label, normalize_isbn, parse_filename_hints
@@ -46,6 +46,7 @@ class RunOptions:
     dry_run: bool = False
     only_ext: set[str] = field(default_factory=set)
     retry_errors: bool = True
+    review_only: bool = False
 
     @property
     def output_csv(self) -> str:
@@ -66,6 +67,7 @@ def parse_args(argv: list[str] | None = None) -> RunOptions:
         help="ничего не копировать и не записывать книги в БД; результат — в results.dry-run.csv",
     )
     parser.add_argument("--only-ext", default="", help="только эти форматы, например pdf,djvu")
+    parser.add_argument("--review-only", action="store_true", help="повторить только книги, требующие ручной проверки")
     parser.add_argument(
         "--retry-errors",
         action=argparse.BooleanOptionalAction,
@@ -85,6 +87,7 @@ def parse_args(argv: list[str] | None = None) -> RunOptions:
         dry_run=args.dry_run,
         only_ext=only_ext,
         retry_errors=args.retry_errors,
+        review_only=args.review_only,
     )
 
 
@@ -137,7 +140,7 @@ def _error_result(source: BookSource, index: int, status: str, reason: str, text
 
 def _attach_error_fallback(result: dict, source: BookSource, options: RunOptions) -> dict:
     # Временные ошибки не копируем в Errors: книга будет обработана в следующем запуске
-    if result.get("status") in ("ok", "interrupted", "duplicate", "error_transient"):
+    if result.get("status") in ("ok", "needs_review", "interrupted", "duplicate", "error_transient"):
         return result
 
     reason = result.get("error_reason", "unknown_error")
@@ -306,8 +309,8 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "metadata_source": metadata_source,
             "metadata_confidence": metadata_confidence,
             "provider_match_score": float(enriched.get("provider_match_score", 0.0) or 0.0),
-            "status": "ok",
-            "error_reason": "",
+            "status": "needs_review" if category_base == DEFAULT_CATEGORY else "ok",
+            "error_reason": category_data.get("review_reason", "") if category_base == DEFAULT_CATEGORY else "",
             "content_hash": content_hash,
         }
 
@@ -483,6 +486,10 @@ def _select_sources(sources: list[BookSource], db: BookDB | None, options: RunOp
 
     skipped_existing = 0
     existing_origin_keys = db.get_all_origin_keys(only_ok=options.retry_errors) if db else set()
+    if options.review_only:
+        review_keys = db.get_review_origin_keys() if db else set()
+        sources = [source for source in sources if _normalized_origin_key(source) in review_keys]
+        existing_origin_keys = set()
     if existing_origin_keys:
         filtered_sources: list[BookSource] = []
         for source in sources:
@@ -541,6 +548,8 @@ def main(argv: list[str] | None = None):
     start_time = time.time()
     processed_ok = 0
     processed_errors = 0
+    processed_review = 0
+    processed_duplicates = 0
     consecutive_transient = 0
     status_counts: Counter = Counter()
     reason_counts: Counter = Counter()
@@ -589,10 +598,13 @@ def main(argv: list[str] | None = None):
                 status_counts[result["status"]] += 1
                 if result["status"] == "ok":
                     processed_ok += 1
+                elif result["status"] == "needs_review":
+                    processed_review += 1
+                elif result["status"] == "duplicate":
+                    processed_duplicates += 1
                 else:
                     processed_errors += 1
-                    if result["status"] != "duplicate":
-                        reason_counts[f"{result['status']}: {_reason_key(result['error_reason'])}"] += 1
+                    reason_counts[f"{result['status']}: {_reason_key(result['error_reason'])}"] += 1
 
                 print(
                     f"✅ Сохранено: {result['file_name']} ({result['index']}/{len(sources)}) | "
@@ -614,8 +626,10 @@ def main(argv: list[str] | None = None):
         print("⛔ Обработка прервана пользователем. Необработанные книги будут взяты при следующем запуске.")
 
     print(
-        "Итог: ok={ok}, errors={err}, skipped_existing={sk}, zip_processed={zp}, zip_skipped={zs}, regular={reg}, total={total}".format(
+        "Итог: ok={ok}, needs_review={review}, duplicate={duplicates}, errors={err}, skipped_existing={sk}, zip_processed={zp}, zip_skipped={zs}, regular={reg}, total={total}".format(
             ok=processed_ok,
+            review=processed_review,
+            duplicates=processed_duplicates,
             err=processed_errors,
             sk=skipped_existing,
             zp=discovery_stats.get("processed_zip_members", 0),
@@ -625,7 +639,7 @@ def main(argv: list[str] | None = None):
         )
     )
     _print_summary(status_counts, reason_counts)
-    print(f"Обработано {processed_ok + processed_errors} из {len(sources)} источников за {time.time() - start_time:.2f}с")
+    print(f"Обработано {processed_ok + processed_errors + processed_review + processed_duplicates} из {len(sources)} источников за {time.time() - start_time:.2f}с")
     print("✅ Программа завершена")
     if fatal_error:
         sys.exit(1)

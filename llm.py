@@ -12,6 +12,7 @@ from ollama import Client, ResponseError
 
 from config import (
     CATEGORY_TREE,
+    CATEGORY_MIN_CONFIDENCE,
     LLM_KEEP_ALIVE,
     LLM_NUM_CTX,
     LLM_NUM_PREDICT,
@@ -313,6 +314,7 @@ def classify_category(text: str, title: str, author: str, interrupted_flag: bool
     model_data = _chat_json(system_prompt, prompt, CATEGORY_SCHEMA)
     category = normalize_spaces(str(model_data.get("category", "")))
     confidence = _normalize_confidence(model_data.get("confidence"), default=0.5)
+    review_reason = ""
 
     if category not in ALLOWED_CATEGORIES:
         # Soft normalization by case-insensitive comparison.
@@ -324,11 +326,16 @@ def classify_category(text: str, title: str, author: str, interrupted_flag: bool
         else:
             category = DEFAULT_CATEGORY
             confidence = 0.0
+            review_reason = "invalid_category_response"
 
     if category == DEFAULT_CATEGORY:
         confidence = 0.0
+        review_reason = review_reason or "insufficient_category_evidence"
+    elif confidence < CATEGORY_MIN_CONFIDENCE:
+        review_reason = f"low_category_confidence:{confidence:.2f}; suggested={category}"
+        category = DEFAULT_CATEGORY
 
-    return {"category": category, "confidence": confidence}
+    return {"category": category, "confidence": confidence, "review_reason": review_reason}
 
 
 def build_category_path(category: str, author: str, series: str) -> str:

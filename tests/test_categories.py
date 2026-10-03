@@ -14,7 +14,8 @@ import llm
 def test_uncertain_category_has_neutral_fallback(monkeypatch, response):
     monkeypatch.setattr(llm, "_chat_json", lambda *args: response)
     assert llm.classify_category("text", "Title", "Author") == {
-        "category": "Требует внимания", "confidence": 0.0
+        "category": "Требует внимания", "confidence": 0.0,
+        "review_reason": "invalid_category_response" if response.get("category") != "Требует внимания" else "insufficient_category_evidence",
     }
 
 
@@ -29,7 +30,7 @@ def test_classifier_receives_subject_rules_and_normalizes_case(monkeypatch):
 
     monkeypatch.setattr(llm, "_chat_json", chat)
     assert llm.classify_category("text", "Python reference", "Author") == {
-        "category": "IT | Языки программирования | Python", "confidence": 0.8
+        "category": "IT | Языки программирования | Python", "confidence": 0.8, "review_reason": ""
     }
 
 
@@ -45,3 +46,10 @@ def test_renamed_fiction_genre_keeps_author_and_series():
     assert llm.build_category_path(
         "Художественные | Научная фантастика", "Иван Петров", ""
     ) == "Художественные | Научная фантастика | ivan-petrov | bez-serii"
+
+
+def test_low_confidence_category_goes_to_review(monkeypatch):
+    monkeypatch.setattr(llm, "_chat_json", lambda *args: {"category": "IT | Data Science", "confidence": 0.2})
+    result = llm.classify_category("text", "Title", "Author")
+    assert result["category"] == "Требует внимания"
+    assert "suggested=IT | Data Science" in result["review_reason"]

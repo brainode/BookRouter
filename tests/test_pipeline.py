@@ -79,3 +79,35 @@ def test_duplicate_skips_processing(main, tmp_path):
     assert result["status"] == "duplicate"
     assert result["new_path"] == "C:\\lib\\orig.pdf"
     assert not (tmp_path / "out").exists()
+
+
+def test_uncertain_book_is_queued_not_copied_to_errors(main, tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "classify_category", lambda *a, **k: {
+        "category": "Требует внимания", "confidence": 0.0, "review_reason": "insufficient_category_evidence"
+    })
+    source = _source(tmp_path)
+    extracted = {"status": "error_no_text", "index": 1, "source": source, "isbn": "", "text": "", "error": "", "content_hash": "h"}
+    result = main.process_file(extracted, _NoopEnricher(), _options(main, tmp_path))
+    assert result["status"] == "needs_review"
+    assert result["error_reason"] == "insufficient_category_evidence"
+    assert Path(result["new_path"]).parent.name == "Требует внимания"
+    assert not (tmp_path / "out" / "Errors").exists()
+
+
+def test_review_only_selection(main, tmp_path):
+    from db import BookDB
+    db = BookDB(str(tmp_path / "books.db"))
+    try:
+        source = _source(tmp_path)
+        key = main._normalized_origin_key(source)
+        db.conn.execute(
+            "INSERT INTO books(time_added, original_filename, original_path, origin_type, origin_path, status) "
+            "VALUES ('now', 'book.pdf', ?, ?, ?, 'needs_review')", (key[1], key[0], key[1])
+        )
+        db.conn.commit()
+        options = _options(main, tmp_path)
+        assert main._select_sources([source], db, options, main.logger)[0] == []
+        options.review_only = True
+        assert main._select_sources([source], db, options, main.logger)[0] == [source]
+    finally:
+        db.close()
