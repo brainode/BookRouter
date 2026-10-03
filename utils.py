@@ -267,8 +267,11 @@ def copy_book_to_category(
 
     category_path_parts = []
     current_parent = output_folder
-    for part in category_parts:
-        resolved_part = _resolve_existing_subdir_name(current_parent, part)
+    for index, part in enumerate(category_parts):
+        # Taxonomy names are exact: punctuation distinguishes C++ from C#.
+        # Only fiction author/series folders may reuse spelling variants.
+        is_fiction_detail = category_parts[0] == "Художественные" and index >= 2
+        resolved_part = _resolve_existing_subdir_name(current_parent, part) if is_fiction_detail else part
         category_path_parts.append(resolved_part)
         current_parent = os.path.join(current_parent, resolved_part)
 
