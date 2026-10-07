@@ -48,8 +48,10 @@
 CLI: `actions [--limit]`, `undo ACTION_ID`, `prune-missing [--apply]` (функции `cmd_<name>(db, args)`). Следующие задачи добавляют команды.
 
 ## Появятся по задачам
-- `authors.py` (T47) — `resolve_author`, ключи имён, фонетические подсказки.
 - `editions.py` (T50) — `work_key`, `edition_relation`, `quality_key`, `edition_label`.
+
+## `authors.py` (T48)
+Таблицы `authors(id,name,slug,genre,created_at)`, `author_aliases(alias_key PK,author_id,initial_key,name)`, колонка `books.author_id`. Функции: `name_parts`, `alias_key`, `initial_key`, `phonetic_key`, `get_author`, `create_author`, `add_alias`, `find_author`, `resolve_author`, `suggest_merges`. Слияние — `library_ops.merge_authors(db, target, sources, output)`. CLI `library.py`: `backfill-authors [--apply]`, `suggest-authors [--limit]`, `merge-authors TARGET SOURCE… [--apply]`.
 
 ## Папки в OUTPUT
 `<категория>/…` — книги; `Errors/{file,zip}/…` — ошибки; `Требует внимания/` — очередь проверки; `_Дубли/` (T50) — худшие экземпляры того же издания; `_Корзина/` (T48) — «удалённые» вручную.

@@ -223,3 +223,40 @@ def prune_missing(db, apply: bool) -> list[dict]:
         db.conn.executemany("DELETE FROM books WHERE id = ?", [(f["id"],) for f in found])
         db.conn.commit()
     return found
+
+
+def merge_authors(db, target_id: int, source_ids: list[int], output_folder: str) -> int:
+    from authors import get_author
+    target = get_author(db, target_id)
+    if target is None:
+        raise LibraryOpError(f"Автор #{target_id} не найден")
+    sources = []
+    for sid in source_ids:
+        if sid == target_id:
+            raise LibraryOpError("Нельзя слить автора с самим собой")
+        src = get_author(db, sid)
+        if src is None:
+            raise LibraryOpError(f"Автор #{sid} не найден")
+        sources.append(src)
+    marks = ",".join("?" * len(source_ids))
+    steps: list[dict] = []
+    for book in db.conn.execute(f"SELECT id, category FROM books WHERE author_id IN ({marks}) ORDER BY id",
+                                list(source_ids)).fetchall():
+        category = book["category"] or ""
+        parts = category.split(" | ")
+        if category.startswith("Художественные | ") and len(parts) >= 3:
+            parts[2] = target["slug"]
+            steps.append(plan_book_step(db, book["id"], output_folder, category=" | ".join(parts),
+                                        updates={"author_id": target_id}, fuzzy_from_level=3))
+        else:
+            steps.append(plan_book_step(db, book["id"], output_folder, updates={"author_id": target_id}))
+    for alias in db.conn.execute(f"SELECT * FROM author_aliases WHERE author_id IN ({marks}) ORDER BY alias_key",
+                                 list(source_ids)).fetchall():
+        after = dict(alias)
+        after["author_id"] = target_id
+        steps.append({"kind": "row", "table": "author_aliases", "key": "alias_key",
+                      "key_value": alias["alias_key"], "after": after})
+    for src in sources:
+        steps.append({"kind": "row", "table": "authors", "key": "id", "key_value": src["id"], "after": None})
+    names = ", ".join(s["name"] for s in sources)
+    return run_action(db, "merge_authors", f"Слияние авторов: {names} → {target['name']}", steps, output_folder)

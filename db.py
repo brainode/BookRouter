@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS books (
     has_text_layer INTEGER,
     quality INTEGER,
     fb2_genres TEXT,
-    subjects TEXT
+    subjects TEXT,
+    author_id INTEGER
 );
 """
 
@@ -102,6 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_books_title_author ON books(title, author);
 CREATE INDEX IF NOT EXISTS idx_books_origin ON books(origin_type, origin_path);
 CREATE INDEX IF NOT EXISTS idx_cache_expires_at ON metadata_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_books_content_hash ON books(content_hash);
+CREATE INDEX IF NOT EXISTS idx_books_author_id ON books(author_id);
 """
 
 CREATE_ACTIONS_LOG_SQL = """
@@ -113,6 +115,23 @@ CREATE TABLE IF NOT EXISTS actions_log (
     payload_json TEXT NOT NULL,
     undone_at TEXT
 );
+"""
+
+CREATE_AUTHORS_SQL = """
+CREATE TABLE IF NOT EXISTS authors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    genre TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS author_aliases (
+    alias_key TEXT PRIMARY KEY,
+    author_id INTEGER NOT NULL REFERENCES authors(id),
+    initial_key TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_author_aliases_initial ON author_aliases(initial_key);
 """
 
 DONE_STATUSES = ("ok", "duplicate", "needs_review", "same_edition", "trashed")
@@ -148,6 +167,7 @@ BOOK_COLUMN_MIGRATIONS = {
     "quality": "INTEGER",
     "fb2_genres": "TEXT",
     "subjects": "TEXT",
+    "author_id": "INTEGER",
 }
 
 
@@ -167,6 +187,7 @@ class BookDB:
         cursor.executescript(CREATE_FTS_SQL)
         cursor.executescript(CREATE_TRIGGERS_SQL)
         cursor.executescript(CREATE_METADATA_CACHE_SQL)
+        cursor.executescript(CREATE_AUTHORS_SQL)
         cursor.executescript(CREATE_INDEX_SQL)
         cursor.executescript(CREATE_ACTIONS_LOG_SQL)
         self.conn.commit()
@@ -221,6 +242,7 @@ class BookDB:
         quality: Optional[int] = None,
         fb2_genres: Optional[str] = None,
         subjects: Optional[str] = None,
+        author_id: Optional[int] = None,
     ) -> int:
         cursor = self.conn.cursor()
         existing = self.find_book_by_origin(origin_type, origin_path)
@@ -237,7 +259,7 @@ class BookDB:
                     error_reason = ?, new_path = ?, content_hash = ?, category_confidence = ?, facts_confidence = ?,
                     source_size = ?, source_mtime_ns = ?,
                     category_evidence = ?, category_source = ?, pub_year = ?, publisher = ?, edition = ?,
-                    book_format = ?, page_count = ?, has_text_layer = ?, quality = ?, fb2_genres = ?, subjects = ?
+                    book_format = ?, page_count = ?, has_text_layer = ?, quality = ?, fb2_genres = ?, subjects = ?, author_id = ?
                 WHERE id = ?
                 """,
                 (
@@ -280,6 +302,7 @@ class BookDB:
                     quality,
                     fb2_genres,
                     subjects,
+                    author_id,
                     existing["id"],
                 ),
             )
@@ -296,9 +319,9 @@ class BookDB:
                 metadata_confidence, provider_match_score, status,
                 error_reason, new_path, content_hash, category_confidence, facts_confidence, source_size, source_mtime_ns,
                 category_evidence, category_source, pub_year, publisher, edition,
-                book_format, page_count, has_text_layer, quality, fb2_genres, subjects
+                book_format, page_count, has_text_layer, quality, fb2_genres, subjects, author_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time_added,
@@ -340,6 +363,7 @@ class BookDB:
                 quality,
                 fb2_genres,
                 subjects,
+                author_id,
             ),
         )
         self.conn.commit()

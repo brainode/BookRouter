@@ -22,6 +22,7 @@ from config import (
 )
 from db import DONE_STATUSES, BookDB
 from interrupt import Interrupted, stop_event
+from authors import resolve_author
 from llm import DEFAULT_CATEGORY, LLMUnavailableError, build_category_path, decide_category, extract_book_facts, warm_up_model
 from logging_utils import install_print_logging, setup_logging
 from metadata_enricher import MetadataEnricher
@@ -148,6 +149,7 @@ def _error_result(source: BookSource, index: int, status: str, reason: str, text
         "quality": 0,
         "fb2_genres": "",
         "subjects": "",
+        "author_id": None,
     }
 
 
@@ -246,7 +248,7 @@ def _facts_from_filename(source: BookSource) -> dict | None:
     }
 
 
-def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOptions):
+def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOptions, db=None):
     source: BookSource = extracted["source"]
     index = extracted["index"]
     raw_isbn = extracted.get("isbn", "")
@@ -311,7 +313,9 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
         category_base = category_data.get("category", "")
         if category_base.startswith("Художественные | ") and not series_final:
             series_final = "Без серии"
-        category_path = build_category_path(category_base, author_final, series_final)
+        author_row = resolve_author(db, author_final, create=not options.dry_run) if db is not None else None
+        category_path = build_category_path(category_base, author_final, series_final,
+                                            author_slug=author_row["slug"] if author_row else None)
 
         # Прерывание во время запросов к LLM: метаданные заглушечные, книгу не копируем
         if stop_event.is_set():
@@ -358,11 +362,13 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "quality": 0 if no_text else quality_score(fmt, ocr_used),
             "fb2_genres": ",".join(embedded.get("genres", [])),
             "subjects": "; ".join(embedded.get("subjects", []))[:500],
+            "author_id": author_row["id"] if author_row else None,
         }
 
         io_path = source.materialized_path or source.logical_path
         new_path = copy_book_to_category(
-            io_path, title_final, author_final, category_path, options.output_folder, dry_run=options.dry_run
+            io_path, title_final, author_final, category_path, options.output_folder, dry_run=options.dry_run,
+            fuzzy_from_level=3 if author_row else 2,
         )
         if not new_path:
             result["status"] = "error_process"
@@ -499,6 +505,7 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         quality=result.get("quality"),
         fb2_genres=result.get("fb2_genres"),
         subjects=result.get("subjects"),
+        author_id=result.get("author_id"),
     )
     if result["status"] in ("ok", "duplicate", "needs_review") and previous:
         old_path = previous.get("new_path") or ""
@@ -660,7 +667,7 @@ def main(argv: list[str] | None = None):
                     if duplicate_path:
                         extracted = {**extracted, "status": "duplicate", "error": duplicate_path}
 
-                result = process_file(extracted, enricher, options)
+                result = process_file(extracted, enricher, options, db)
                 result["source_size"] = extracted.get("source_size")
                 result["source_mtime_ns"] = extracted.get("source_mtime_ns")
                 if result["status"] == "interrupted":

@@ -337,14 +337,14 @@ def classify_category(
     return {"category": category, "confidence": confidence, "review_reason": review_reason, "evidence": evidence}
 
 
-def build_category_path(category: str, author: str, series: str) -> str:
+def build_category_path(category: str, author: str, series: str, author_slug: str | None = None) -> str:
     normalized_category = normalize_spaces(str(category)).replace(">", "|")
     parts = [normalize_spaces(part) for part in normalized_category.split("|") if normalize_spaces(part)]
     if not parts:
         return DEFAULT_CATEGORY
 
     if len(parts) >= 2 and parts[0] == "Художественные":
-        author_key = to_ascii_slug(canonical_author_name(author), fallback="unknown-author")
+        author_key = author_slug or to_ascii_slug(canonical_author_name(author), fallback="unknown-author")
         series_key = to_ascii_slug(series or "Без серии", fallback="bez-serii")
         return " | ".join([parts[0], parts[1], author_key, series_key])
 

@@ -183,3 +183,18 @@ def test_zip_signature_tracks_archive(main, tmp_path):
     before = main.source_signature(source)
     archive.write_bytes(b"changed archive")
     assert main.source_signature(source) != before
+
+
+def test_process_file_uses_author_slug(main, tmp_path, monkeypatch):
+    from authors import add_alias, create_author
+    from db import BookDB
+
+    monkeypatch.setattr(main, "decide_category", lambda *a, **k: {"category": "Художественные | Детская", "confidence": 0.9})
+    db = BookDB(str(tmp_path / "t.db"))
+    author = create_author(db, "Иван Петров", slug="custom-slug")
+    add_alias(db, author["id"], "Иван Петров")
+    source = _source(tmp_path)
+    extracted = {"status": "error_no_text", "index": 1, "source": source, "isbn": "", "text": "", "error": "no_text_extracted", "content_hash": "h"}
+    result = main.process_file(extracted, _NoopEnricher(), _options(main, tmp_path), db=db)
+    assert "custom-slug" in result["category"]
+    assert result["author_id"] == author["id"]

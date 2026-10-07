@@ -21,7 +21,7 @@ def test_truncate_preserves_fts_and_allows_reuse(tmp_path, vacuum):
     )
     conn.commit()
     schema = [tuple(row) for row in conn.execute("SELECT name, sql FROM sqlite_master ORDER BY name")]
-    assert get_regular_tables(conn) == ["actions_log", "books", "metadata_cache"]
+    assert get_regular_tables(conn) == ["actions_log", "author_aliases", "authors", "books", "metadata_cache"]
     database.close()
 
     truncate_db(path, vacuum=vacuum)
