@@ -61,6 +61,13 @@ def _get_bool(name: str, default: bool) -> bool:
 
 _load_dotenv(Path(__file__).resolve().parent / ".env")
 
+PROMPTS_DIR = Path(_get_str("PROMPTS_DIR", str(Path(__file__).resolve().parent / "prompts")))
+
+
+def read_prompt(name: str) -> str:
+    """Текст промпта из PROMPTS_DIR; правится в веб-интерфейсе, поэтому не хранится в коде."""
+    return (PROMPTS_DIR / name).read_text(encoding="utf-8").strip("\n")
+
 OPENAI_API_KEY = _get_str("OPENAI_API_KEY", "")
 MODEL_NAME = _get_str("MODEL_NAME", "gemma3:12b")
 LLM_TEMPERATURE = _get_float("LLM_TEMPERATURE", 0.15)
@@ -102,48 +109,9 @@ INPUT_BOOKS_FOLDER = _get_str("INPUT_BOOKS_FOLDER", "")
 OUTPUT_BOOKS_FOLDER = _get_str("OUTPUT_BOOKS_FOLDER", "")
 TESSERACT_CMD = _get_str("TESSERACT_CMD", "")
 
-CATEGORY_TREE = """
-Уровень 1 | Уровень 2 | Уровень 3
-Требует внимания
-Художественные | Классика
-Художественные | Детская
-Художественные | Фэнтези
-Художественные | Научная фантастика
-Художественные | Драма
-Художественные | Детектив
-Художественные | Ужасы
-Художественные | Другое
-История
-IT | Компьютерная графика и моделирование
-IT | Администрирование
-IT | AI и ML
-IT | Алгоритмы и структуры данных
-IT | Основы информатики
-IT | Data Science
-IT | DevOps
-IT | Разработка игр
-IT | Информационная безопасность
-IT | Разработка ПО | Qt
-IT | Веб-разработка | JavaScript и TypeScript
-IT | Базы данных | SQL
-IT | Базы данных | Общее
-IT | Языки программирования | C++
-IT | Языки программирования | Rust
-IT | Языки программирования | Go
-IT | Языки программирования | Python
-IT | Языки программирования | C#
-IT | Языки программирования | Asm
-Иностранные языки | English
-Иностранные языки | Spanish
-Саморазвитие
-Психология
-Наука | Математика | Геометрия
-Наука | Математика | Статистика
-Наука | Математика | Теория вероятностей
-Наука | Математика | Математический анализ
-Наука | Математика | Топология
-Наука | Математика | Логика
-Наука | Математика | Теория графов
-Наука | Космос
-Наука | Физика
-"""
+CATEGORY_TREE = read_prompt("category_tree.txt")
+CATEGORY_RULES = read_prompt("category_rules.txt")
+FACTS_SYSTEM_PROMPT = read_prompt("facts_system.txt")
+FACTS_USER_PROMPT = read_prompt("facts_user.txt")
+CLASSIFY_SYSTEM_PROMPT = read_prompt("classify_system.txt")
+CLASSIFY_USER_PROMPT = read_prompt("classify_user.txt")

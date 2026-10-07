@@ -1,0 +1,9 @@
+Extract bibliographic facts from the provided text.
+Return JSON only.
+If uncertain, keep the field empty.
+
+Filename hint:
+{filename}
+
+Text:
+{excerpt}

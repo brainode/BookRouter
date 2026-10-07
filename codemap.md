@@ -30,7 +30,7 @@
 | `export_results.py`, `truncate_db.py` | экспорт CSV, очистка БД | storage |
 | `tests/` | pytest | tests |
 
-Файлы, которые появятся по задачам (см. `TASKS.md`): `prompts/` (T40), `genres.py` (T44), `authors.py` (T47), `library_ops.py` + `library.py` (T48), `editions.py` (T50), `eval_quality.py` (T52), `webui/` + `webui.py` (T53+). Когда задача сделана, её модуль описывается в подкарте, а пометка «появится» снимается.
+Файлы, которые появятся по задачам (см. `TASKS.md`): `genres.py` (T44), `authors.py` (T47), `library_ops.py` + `library.py` (T48), `editions.py` (T50), `eval_quality.py` (T52), `webui/` + `webui.py` (T53+). Когда задача сделана, её модуль описывается в подкарте, а пометка «появится» снимается.
 
 ## Рецепты «что менять, если…»
 

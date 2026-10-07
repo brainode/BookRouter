@@ -35,6 +35,7 @@
 - После T43: `ExtractedText` и `extract_book(path, head, tail)` с форматом, числом страниц, флагом OCR и встроенными метаданными (`_fb2_metadata`, `_epub_metadata`).
 
 ## `llm.py`
+Промпты и `CATEGORY_RULES` берутся из `config` (файлы `prompts/*.txt`).
 - `_parse_categories` → `ALLOWED_CATEGORIES`; `DEFAULT_CATEGORY = "Требует внимания"`; `CATEGORY_RULES`; `FACTS_SCHEMA`, `CATEGORY_SCHEMA`.
 - `_chat_raw` — единственный вызов Ollama (лестница параметров, `LLMUnavailableError`). `_chat_json` — опции + разбор JSON. `warm_up_model`.
 - `extract_book_facts(text, filename)` → `{title, author, isbn, confidence, language_hint, series_hint}`.
@@ -48,7 +49,7 @@
 `MetadataEnricher.enrich(facts)`: ISBN → `_lookup_isbn`, иначе `_lookup_title_author`; кэш `metadata_cache` (`_cache_get/_cache_set`); `_merge` — внешние данные заполняют только пустые title/author, ISBN/серию перекрывают. Провайдеры: `providers/openlibrary.py`, `providers/google_books.py`, база и скоринг — `providers/base.py` (`ProviderResult`, `score_candidate`, `best_candidate`).
 
 ## `config.py`
-`_load_dotenv` (setdefault — реальные переменные окружения главнее), геттеры `_get_str/_int/_float/_bool`, константы настроек, `CATEGORY_TREE`. После T40 дерево и промпты читаются из `prompts/`, после T63 — ещё и `settings.override.env`.
+`_load_dotenv` (setdefault — реальные переменные окружения главнее), геттеры `_get_str/_int/_float/_bool`, константы настроек, `read_prompt`, `PROMPTS_DIR`; `CATEGORY_TREE`, `CATEGORY_RULES` и промпты читаются из `prompts/*.txt`; после T63 — ещё и `settings.override.env`.
 
 ## `preflight.py`
 `run_preflight(extensions, input, output, dry_run)` → список проблем: `check_folders`, `check_tesseract`, `check_djvu_tools`, `check_ollama`.

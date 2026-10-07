@@ -11,7 +11,12 @@ import httpx
 from ollama import Client, ResponseError
 
 from config import (
+    CATEGORY_RULES,
     CATEGORY_TREE,
+    CLASSIFY_SYSTEM_PROMPT,
+    CLASSIFY_USER_PROMPT,
+    FACTS_SYSTEM_PROMPT,
+    FACTS_USER_PROMPT,
     CATEGORY_MIN_CONFIDENCE,
     LLM_KEEP_ALIVE,
     LLM_NUM_CTX,
@@ -52,37 +57,6 @@ def _parse_categories(raw_tree: str) -> list[str]:
 
 ALLOWED_CATEGORIES = _parse_categories(CATEGORY_TREE)
 DEFAULT_CATEGORY = "Требует внимания"
-
-CATEGORY_RULES = """
-Classify by the book's main subject and purpose, not isolated keywords or example languages.
-Use 'Требует внимания' when evidence is insufficient or no category fits;
-this is the queue for human review.
-IT | AI и ML: training and applying models, neural networks, computer vision and NLP.
-IT | Data Science: preparing, exploring, analyzing and visualizing data; choose AI и ML
-instead when model training or machine learning is the main subject.
-Наука | Математика | Статистика and Теория вероятностей: mathematical foundations
-and statistical inference, even when examples use Python or machine learning.
-IT | Алгоритмы и структуры данных: practical algorithms and data structures,
-regardless of the programming language used in examples.
-Наука | Математика | Теория графов: mathematical graph theory rather than
-implementation of graph algorithms in software.
-IT | Основы информатики: broad computing foundations; prefer a specific category
-when the book focuses on that subject.
-Qt belongs to IT | Разработка ПО | Qt; Node.js belongs to
-IT | Веб-разработка | JavaScript и TypeScript.
-Use IT | Базы данных | SQL for SQL-focused books and IT | Базы данных | Общее
-for database design, database systems and non-SQL databases.
-IT | Информационная безопасность: cybersecurity, cryptography, vulnerabilities
-and ethical hacking. General tips and tricks belong to their actual subject.
-Cheatsheets and reference guides belong to their subject, such as Python or SQL.
-Fiction priorities: explicitly children's literature goes to Детская, including
-children's classics and fantasy. Otherwise prefer the dominant genre (Фэнтези,
-Научная фантастика, Детектив, Ужасы). Use Классика for established literary
-classics without a dominant listed genre, Драма for other dramatic fiction,
-and Художественные | Другое only for fiction that fits none of these.
-Learning English or Spanish belongs to Иностранные языки; the language a book
-is written in does not determine its subject category.
-""".strip()
 
 FACTS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -249,18 +223,8 @@ def extract_book_facts(text: str, filename: str = "", interrupted_flag: bool | N
 
     file_hints = parse_filename_hints(filename)
     excerpt = text[:12000]
-    prompt = (
-        "Extract bibliographic facts from the provided text.\n"
-        "Return JSON only.\n"
-        "If uncertain, keep the field empty.\n\n"
-        f"Filename hint:\n{filename}\n\n"
-        f"Text:\n{excerpt}"
-    )
-    system_prompt = (
-        "You are a metadata extractor. Focus on title, author, and ISBN.\n"
-        "Do not classify category.\n"
-        "Do not invent values."
-    )
+    prompt = FACTS_USER_PROMPT.format(filename=filename, excerpt=excerpt)
+    system_prompt = FACTS_SYSTEM_PROMPT
     model_data = _chat_json(system_prompt, prompt, FACTS_SCHEMA)
 
     fallback_title, fallback_author = _fallback_extract_from_text(excerpt)
@@ -297,20 +261,8 @@ def classify_category(text: str, title: str, author: str, interrupted_flag: bool
         return {"category": DEFAULT_CATEGORY, "confidence": 0.0}
 
     categories_text = "\n".join(f"- {category}" for category in ALLOWED_CATEGORIES)
-    prompt = (
-        "Classify this book into exactly one category from the list.\n"
-        "Return JSON only.\n\n"
-        f"Title: {title}\n"
-        f"Author: {author}\n"
-        f"Text excerpt:\n{text[:9000]}"
-    )
-    system_prompt = (
-        "You are a strict book classifier.\n"
-        "Choose one category from the provided list.\n"
-        "No extra explanations.\n"
-        f"Classification rules:\n{CATEGORY_RULES}\n\n"
-        f"Allowed categories:\n{categories_text}"
-    )
+    prompt = CLASSIFY_USER_PROMPT.format(title=title, author=author, excerpt=text[:9000])
+    system_prompt = CLASSIFY_SYSTEM_PROMPT.format(rules=CATEGORY_RULES, categories=categories_text)
     model_data = _chat_json(system_prompt, prompt, CATEGORY_SCHEMA)
     category = normalize_spaces(str(model_data.get("category", "")))
     confidence = _normalize_confidence(model_data.get("confidence"), default=0.5)

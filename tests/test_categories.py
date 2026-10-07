@@ -1,5 +1,6 @@
 import pytest
 
+import config
 import llm
 
 
@@ -53,3 +54,24 @@ def test_low_confidence_category_goes_to_review(monkeypatch):
     result = llm.classify_category("text", "Title", "Author")
     assert result["category"] == "Требует внимания"
     assert "suggested=IT | Data Science" in result["review_reason"]
+
+
+def test_prompt_files_loaded():
+    assert "IT | AI и ML" in llm.ALLOWED_CATEGORIES
+    assert llm.DEFAULT_CATEGORY in llm.ALLOWED_CATEGORIES
+    assert "{excerpt}" in config.FACTS_USER_PROMPT
+
+
+def test_classify_prompt_contains_rules(monkeypatch):
+    seen = {}
+
+    def fake(system_prompt, user_prompt, schema):
+        seen["system"] = system_prompt
+        seen["user"] = user_prompt
+        return {"category": "IT | AI и ML", "confidence": 0.9}
+
+    monkeypatch.setattr(llm, "_chat_json", fake)
+    llm.classify_category("txt", "T", "A")
+    assert llm.CATEGORY_RULES.splitlines()[0] in seen["system"]
+    assert "- IT | AI и ML" in seen["system"]
+    assert "Title: T" in seen["user"]
