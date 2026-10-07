@@ -104,6 +104,19 @@ CREATE INDEX IF NOT EXISTS idx_cache_expires_at ON metadata_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_books_content_hash ON books(content_hash);
 """
 
+CREATE_ACTIONS_LOG_SQL = """
+CREATE TABLE IF NOT EXISTS actions_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    action TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    undone_at TEXT
+);
+"""
+
+DONE_STATUSES = ("ok", "duplicate", "needs_review", "same_edition", "trashed")
+
 BOOK_COLUMN_MIGRATIONS = {
     "origin_type": "TEXT",
     "origin_path": "TEXT",
@@ -155,6 +168,7 @@ class BookDB:
         cursor.executescript(CREATE_TRIGGERS_SQL)
         cursor.executescript(CREATE_METADATA_CACHE_SQL)
         cursor.executescript(CREATE_INDEX_SQL)
+        cursor.executescript(CREATE_ACTIONS_LOG_SQL)
         self.conn.commit()
 
     def _ensure_book_columns(self):
@@ -348,13 +362,15 @@ class BookDB:
     def get_all_origin_keys(self, only_ok: bool = True) -> set[tuple[str, str]]:
         """Ключи уже обработанных источников. При only_ok ошибочные не возвращаются — их обработают заново."""
         cursor = self.conn.cursor()
+        marks = ",".join("?" * len(DONE_STATUSES))
         cursor.execute(
             f"""
             SELECT origin_type, origin_path
             FROM books
             WHERE origin_path IS NOT NULL AND origin_path != ''
-            {"AND status IN ('ok', 'duplicate', 'needs_review')" if only_ok else ""}
-            """
+            {f"AND status IN ({marks})" if only_ok else ""}
+            """,
+            DONE_STATUSES if only_ok else (),
         )
         return {(str(row["origin_type"] or ""), str(row["origin_path"] or "")) for row in cursor.fetchall()}
 

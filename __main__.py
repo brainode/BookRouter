@@ -20,7 +20,7 @@ from config import (
     OUTPUT_BOOKS_FOLDER,
     RETRY_ERRORS,
 )
-from db import BookDB
+from db import DONE_STATUSES, BookDB
 from interrupt import Interrupted, stop_event
 from llm import DEFAULT_CATEGORY, LLMUnavailableError, build_category_path, decide_category, extract_book_facts, warm_up_model
 from logging_utils import install_print_logging, setup_logging
@@ -571,7 +571,7 @@ def _select_sources(sources: list[BookSource], db: BookDB | None, options: RunOp
                     unchanged = source_signature(source) == (state.get("source_size"), state.get("source_mtime_ns"))
                 except OSError:
                     pass
-                if state.get("status") in ("ok", "duplicate", "needs_review"):
+                if state.get("status") in DONE_STATUSES:
                     unchanged = unchanged and bool(state.get("new_path")) and os.path.isfile(long_path(state["new_path"]))
             if key in existing_origin_keys and unchanged:
                 skipped_existing += 1

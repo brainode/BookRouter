@@ -21,7 +21,7 @@
 
 Ключевые колонки `books`: `title`, `author`, `series`, `isbn_norm`, `category` (полный путь через ` | `), `status`, `error_reason`, `new_path` (файл в библиотеке), `content_hash`, `preview_text`, `category_confidence`, `metadata_source`, `category_evidence`, `category_source`, `pub_year`, `publisher`, `edition`, `book_format`, `page_count`, `has_text_layer`, `quality`, `fb2_genres`, `subjects` (T43).
 
-Новые таблицы и колонки по задачам: T42/T43 — колонки извлечения и фактов; T47 — `authors`, `author_aliases`, `books.author_id`; T48 — `actions_log`; T50 — `work_key`, `same_as_id`, `work_reviews`; T52 — `golden`. Каждая задача указывает точный SQL.
+Новые таблицы и колонки по задачам: T42/T43 — колонки извлечения и фактов; T47 — `authors`, `author_aliases`, `books.author_id`; `actions_log` (id, created_at, action, summary, payload_json, undone_at) — готово (T47); `db.DONE_STATUSES` — статусы «обработано»; T50 — `work_key`, `same_as_id`, `work_reviews`; T52 — `golden`. Каждая задача указывает точный SQL.
 
 ## `utils.py`
 
@@ -33,6 +33,7 @@
 | `source_signature` | `(size, mtime_ns)` источника |
 | `atomic_copy(src, dst)` | копия через временный файл; одинаковый файл переиспользуется; конфликт имён → ` (2)` |
 | `_resolve_existing_subdir_name` | нечёткое переиспользование существующей папки (только уровни автора/серии худлита) |
+| `category_destination(file, title, author, category, output, fuzzy_from_level=2)` | путь файла и части категории без побочных эффектов |
 | `copy_book_to_category(file, title, author, category, output)` | папки из категории + имя `Название - Автор.ext` |
 | `copy_to_errors`, `remove_stale_error_copy` | `<OUTPUT>/Errors/{file,zip}/…` |
 | `write_results_csv`, `append_csv`, `CSV_HEADER` | CSV с разделителем `|` |
@@ -40,10 +41,14 @@
 ## `review_books.py`
 `resolve_book(db, id, category, output, title, author, series)` — переносит книгу из `Требует внимания` в выбранную категорию, ставит `status='ok'`, `metadata_source='manual'`. CLI: список очереди или `--resolve ID --category …`.
 
+## `library_ops.py`
+`plan_book_step`, `apply_steps`, `record_action`, `run_action`, `undo_action`, `trash_book`, `prune_missing`, `LibraryOpError`, `TRASH_FOLDER`, `DUPLICATES_FOLDER`. Единственное место, где книги перемещаются после копирования; шаги `book`/`row` пишутся в `actions_log`.
+
+## `library.py`
+CLI: `actions [--limit]`, `undo ACTION_ID`, `prune-missing [--apply]` (функции `cmd_<name>(db, args)`). Следующие задачи добавляют команды.
+
 ## Появятся по задачам
 - `authors.py` (T47) — `resolve_author`, ключи имён, фонетические подсказки.
-- `library_ops.py` (T48) — `move_book`, `log_action`, `undo_action`, `trash_book`; единственное место, где книги перемещаются после копирования.
-- `library.py` (T48+) — CLI обслуживания: `merge-authors`, `suggest-authors`, `set-author-genre`, `rebuild-fiction`, `backfill-*`, `dedupe-editions`, `reclassify`, `prune-missing`, `undo`.
 - `editions.py` (T50) — `work_key`, `edition_relation`, `quality_key`, `edition_label`.
 
 ## Папки в OUTPUT

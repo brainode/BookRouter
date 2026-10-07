@@ -305,14 +305,9 @@ def remove_stale_error_copy(old_path: str, output_folder: str, include_review: b
         logger.warning("error_copy_remove_failed path=%s error=%s", old_path, exc)
 
 
-def copy_book_to_category(
-    file_path: str,
-    title: str,
-    author: str,
-    category: str,
-    output_folder: str,
-    dry_run: bool = False,
-):
+def category_destination(file_path: str, title: str, author: str, category: str, output_folder: str,
+                         fuzzy_from_level: int = 2) -> tuple[str, list[str]]:
+    """Путь файла в библиотеке и разрешённые части категории. Папки не создаются."""
     char_for_splitting = "|" if ">" not in str(category) else ">"
     category_parts = [
         sanitize_filename(part.strip())
@@ -328,7 +323,7 @@ def copy_book_to_category(
     for index, part in enumerate(category_parts):
         # Taxonomy names are exact: punctuation distinguishes C++ from C#.
         # Only fiction author/series folders may reuse spelling variants.
-        is_fiction_detail = category_parts[0] == "Художественные" and index >= 2
+        is_fiction_detail = category_parts[0] == "Художественные" and index >= fuzzy_from_level
         resolved_part = _resolve_existing_subdir_name(current_parent, part) if is_fiction_detail else part
         category_path_parts.append(resolved_part)
         current_parent = os.path.join(current_parent, resolved_part)
@@ -340,7 +335,22 @@ def copy_book_to_category(
         new_filename = sanitize_filename(os.path.basename(file_path))
     else:
         new_filename = sanitize_filename(f"{title} - {author}{file_ext}")
-    destination = os.path.join(category_folder, new_filename)
+    return os.path.join(category_folder, new_filename), category_path_parts
+
+
+def copy_book_to_category(
+    file_path: str,
+    title: str,
+    author: str,
+    category: str,
+    output_folder: str,
+    dry_run: bool = False,
+    fuzzy_from_level: int = 2,
+):
+    destination, category_path_parts = category_destination(
+        file_path, title, author, category, output_folder, fuzzy_from_level
+    )
+    category_folder = os.path.dirname(destination)
 
     if dry_run:
         print(f"📂 Категория (dry-run): {' | '.join(category_path_parts)}")
