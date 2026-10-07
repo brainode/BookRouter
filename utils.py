@@ -3,19 +3,67 @@
 
 import csv
 import difflib
+import hashlib
 import logging
 import os
 import re
 import shutil
+import stat
+import tempfile
 
 from config import ERRORS_SUBFOLDER, PATH_ALIAS_THRESHOLD
-from normalization import normalize_for_match
+from normalization import normalize_for_match, token_key
 
-logger = logging.getLogger("scanbookshelf")
+logger = logging.getLogger("bookrouter")
+
+MAX_NAME_LEN = 120
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
-def sanitize_filename(name: str) -> str:
-    return re.sub(r'[\\/*?:"<>|]', "-", str(name))
+def long_path(path: str) -> str:
+    """Путь для файловых операций Windows: длиннее ~260 символов работает только с префиксом \\\\?\\."""
+    if os.name != "nt" or not path:
+        return path
+    absolute = os.path.abspath(path)
+    if absolute.startswith("\\\\?\\") or len(absolute) < 240:
+        return path
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+def file_fingerprint(path: str, edge_bytes: int = 4 * 1024 * 1024) -> str:
+    """Fast candidate filter: size and SHA-1 of the edges; confirm with full SHA-256."""
+    full_path = long_path(path)
+    size = os.path.getsize(full_path)
+    digest = hashlib.sha1()
+    with open(full_path, "rb") as f:
+        digest.update(f.read(edge_bytes))
+        if size > edge_bytes:
+            f.seek(max(edge_bytes, size - edge_bytes))
+            digest.update(f.read(edge_bytes))
+    return f"{size}:{digest.hexdigest()}"
+
+
+def source_signature(source) -> tuple[int, int]:
+    path = source.archive_path if source.origin_type == "zip" else source.logical_path
+    info = os.stat(long_path(path))
+    return info.st_size, info.st_mtime_ns
+
+
+def sanitize_filename(name: str, max_len: int = MAX_NAME_LEN) -> str:
+    value = re.sub(r'[\\/*?:"<>|\x00-\x1f]', "-", str(name))
+    value = re.sub(r"\s+", " ", value).strip()
+    # Windows молча отбрасывает точки и пробелы в конце имени
+    value = value.rstrip(". ")
+    if len(value) > max_len:
+        stem, ext = os.path.splitext(value)
+        if len(ext) > 8:
+            stem, ext = value, ""
+        value = stem[: max_len - len(ext)].rstrip(". ") + ext
+    if value.split(".", 1)[0].strip().upper() in _WINDOWS_RESERVED:
+        value = f"_{value}"
+    return value or "_"
 
 
 def _sanitize_rel_path(raw_path: str) -> str:
@@ -25,36 +73,97 @@ def _sanitize_rel_path(raw_path: str) -> str:
     return "/".join(part for part in safe_parts if part)
 
 
+def _strip_errors_prefix(relative: str) -> str:
+    """Вход может сам быть выходом прошлого прогона: не вкладываем Errors/file/Errors/file/…"""
+    parts = relative.split("/")
+    while len(parts) > 2 and parts[0].lower() == ERRORS_SUBFOLDER.lower() and parts[1].lower() in ("file", "zip"):
+        parts = parts[2:]
+    return "/".join(parts)
+
+
+CSV_HEADER = [
+    "№", "Файл", "ISBN", "Название", "Автор", "Серия", "Категория", "Источник",
+    "Уверенность метаданных", "Статус", "Причина ошибки или проверки", "Тип источника",
+    "Путь архива", "Элемент архива", "Текст", "Новый путь", "Уверенность категории", "Уверенность извлечения",
+]
+
+
+def full_file_hash(path: str) -> str:
+    with open(long_path(path), "rb") as file:
+        return hashlib.file_digest(file, "sha256").hexdigest()
+
+
+def find_duplicate(path: str, fingerprint: str, known_hashes: dict[str, list[str]]) -> str | None:
+    candidates = tuple(known_hashes.get(fingerprint, ()))
+    if not candidates:
+        return None
+    source_hash = full_file_hash(path)
+    for candidate in candidates:
+        try:
+            if full_file_hash(candidate) == source_hash:
+                return candidate
+        except OSError as exc:
+            logger.warning("duplicate_candidate_unavailable path=%s error=%s", candidate, exc)
+    return None
+
+
+def atomic_copy(source: str, destination: str) -> str:
+    """Reuse identical copies; publish only complete files in the destination directory."""
+    os.makedirs(long_path(os.path.dirname(destination)), exist_ok=True)
+    candidate = destination
+    stem, ext = os.path.splitext(destination)
+    counter = 2
+    source_hash = None
+    while os.path.exists(long_path(candidate)):
+        if os.path.isfile(long_path(candidate)) and os.path.getsize(long_path(candidate)) == os.path.getsize(long_path(source)):
+            source_hash = source_hash or full_file_hash(source)
+            if full_file_hash(candidate) == source_hash:
+                return candidate
+        candidate = f"{stem} ({counter}){ext}"
+        counter += 1
+    fd, temp_path = tempfile.mkstemp(prefix=".bookrouter-", suffix=".tmp", dir=long_path(os.path.dirname(candidate)))
+    os.close(fd)
+    try:
+        shutil.copy2(long_path(source), temp_path)
+        os.chmod(temp_path, stat.S_IREAD | stat.S_IWRITE)
+        with open(temp_path, "r+b") as file:
+            os.fsync(file.fileno())
+        shutil.copystat(long_path(source), temp_path)
+        os.replace(temp_path, long_path(candidate))
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+    return candidate
+
+
+def write_results_csv(path: str, rows):
+    """Atomically replace an export; preserve the previous export on failure."""
+    destination = os.path.abspath(path)
+    fd, temp_path = tempfile.mkstemp(prefix=".results-", suffix=".tmp", dir=os.path.dirname(destination))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as file:
+            writer = csv.writer(file, delimiter="|")
+            writer.writerow(CSV_HEADER)
+            writer.writerows(rows)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, destination)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
 def append_csv(path: str, row):
     write_header = not os.path.exists(path)
     with open(path, mode="a", encoding="utf-8", newline="") as f:
         writer = csv.writer(f, delimiter="|")
         if write_header:
-            writer.writerow(
-                [
-                    "№",
-                    "Файл",
-                    "ISBN",
-                    "Название",
-                    "Автор",
-                    "Серия",
-                    "Категория",
-                    "Источник",
-                    "Уверенность",
-                    "Статус",
-                    "Причина ошибки",
-                    "Тип источника",
-                    "Путь архива",
-                    "Элемент архива",
-                    "Текст",
-                    "Новый путь",
-                ]
-            )
+            writer.writerow(CSV_HEADER)
         writer.writerow(row)
 
 
 def _resolve_existing_subdir_name(parent_dir: str, candidate_name: str, threshold=PATH_ALIAS_THRESHOLD) -> str:
-    if not os.path.isdir(parent_dir):
+    if not os.path.isdir(long_path(parent_dir)):
         return candidate_name
 
     candidate_key = normalize_for_match(candidate_name)
@@ -64,13 +173,13 @@ def _resolve_existing_subdir_name(parent_dir: str, candidate_name: str, threshol
     best_match = None
     best_ratio = 0.0
     try:
-        for entry in os.scandir(parent_dir):
+        for entry in os.scandir(long_path(parent_dir)):
             if not entry.is_dir():
                 continue
             existing_key = normalize_for_match(entry.name)
             if not existing_key:
                 continue
-            if existing_key == candidate_key:
+            if existing_key == candidate_key or token_key(entry.name) == token_key(candidate_name):
                 return entry.name
             if min(len(existing_key), len(candidate_key)) < 4:
                 continue
@@ -87,7 +196,7 @@ def _resolve_existing_subdir_name(parent_dir: str, candidate_name: str, threshol
 
 
 def make_unique_destination(path: str) -> str:
-    if not os.path.exists(path):
+    if not os.path.exists(long_path(path)):
         return path
 
     directory = os.path.dirname(path)
@@ -97,12 +206,12 @@ def make_unique_destination(path: str) -> str:
     counter = 2
     while True:
         candidate = os.path.join(directory, f"{stem} ({counter}){ext}")
-        if not os.path.exists(candidate):
+        if not os.path.exists(long_path(candidate)):
             return candidate
         counter += 1
 
 
-def copy_to_errors(source, output_folder: str, reason: str) -> str:
+def copy_to_errors(source, output_folder: str, reason: str, dry_run: bool = False) -> str:
     errors_root = os.path.join(output_folder, ERRORS_SUBFOLDER)
     origin_type = getattr(source, "origin_type", "file")
     source_root = getattr(source, "source_root", "")
@@ -124,14 +233,15 @@ def copy_to_errors(source, output_folder: str, reason: str) -> str:
             except Exception:
                 relative = os.path.basename(logical_path)
         relative = _sanitize_rel_path(relative or os.path.basename(logical_path or display_name))
+        relative = _strip_errors_prefix(relative)
         destination = os.path.join(errors_root, "file", *relative.split("/"))
 
     src = ""
-    if materialized_path and os.path.exists(materialized_path):
+    if materialized_path and os.path.exists(long_path(materialized_path)):
         src = materialized_path
-    elif origin_type == "file" and logical_path and os.path.exists(logical_path):
+    elif origin_type == "file" and logical_path and os.path.exists(long_path(logical_path)):
         src = logical_path
-    elif origin_type == "zip" and archive_path and os.path.exists(archive_path):
+    elif origin_type == "zip" and archive_path and os.path.exists(long_path(archive_path)):
         src = archive_path
         archive_base = sanitize_filename(os.path.splitext(os.path.basename(archive_path))[0] or "archive")
         destination = os.path.join(errors_root, "zip", archive_base, sanitize_filename(os.path.basename(archive_path)))
@@ -140,11 +250,23 @@ def copy_to_errors(source, output_folder: str, reason: str) -> str:
         logger.error("error_fallback_copy_failed reason=no_source_file origin=%s logical=%s", origin_type, logical_path)
         return ""
 
-    os.makedirs(os.path.dirname(destination), exist_ok=True)
-    destination = make_unique_destination(destination)
+    if dry_run:
+        logger.info("error_fallback_dry_run reason=%s source=%s destination=%s", reason, src, destination)
+        return destination
 
+    os.makedirs(long_path(os.path.dirname(destination)), exist_ok=True)
+    if os.path.isfile(long_path(destination)) and os.path.getsize(long_path(destination)) == os.path.getsize(long_path(src)) and full_file_hash(destination) == full_file_hash(src):
+        # Повторная обработка той же книги: копия уже лежит в Errors
+        logger.error(
+            "error_fallback_reused reason=%s origin=%s source=%s destination=%s",
+            reason,
+            origin_type,
+            src,
+            destination,
+        )
+        return destination
     try:
-        shutil.copy2(src, destination)
+        destination = atomic_copy(src, destination)
         logger.error(
             "error_fallback_copy reason=%s origin=%s source=%s destination=%s archive=%s member=%s",
             reason,
@@ -167,7 +289,30 @@ def copy_to_errors(source, output_folder: str, reason: str) -> str:
         return ""
 
 
-def copy_book_to_category(file_path: str, title: str, author: str, category: str, output_folder: str):
+def remove_stale_error_copy(old_path: str, output_folder: str, include_review: bool = False):
+    """После успешной переобработки удаляет прежнюю копию книги из Errors (только внутри OUTPUT/Errors)."""
+    if not old_path or not output_folder:
+        return
+    folders = [ERRORS_SUBFOLDER] + (["Требует внимания"] if include_review else [])
+    roots = [os.path.normcase(os.path.realpath(os.path.join(output_folder, folder))) for folder in folders]
+    candidate = os.path.normcase(os.path.realpath(old_path))
+    if not any(candidate.startswith(root + os.sep) for root in roots) or not os.path.isfile(long_path(old_path)):
+        return
+    try:
+        os.remove(long_path(old_path))
+        logger.info("error_copy_removed path=%s", old_path)
+    except OSError as exc:
+        logger.warning("error_copy_remove_failed path=%s error=%s", old_path, exc)
+
+
+def copy_book_to_category(
+    file_path: str,
+    title: str,
+    author: str,
+    category: str,
+    output_folder: str,
+    dry_run: bool = False,
+):
     char_for_splitting = "|" if ">" not in str(category) else ">"
     category_parts = [
         sanitize_filename(part.strip())
@@ -180,13 +325,15 @@ def copy_book_to_category(file_path: str, title: str, author: str, category: str
 
     category_path_parts = []
     current_parent = output_folder
-    for part in category_parts:
-        resolved_part = _resolve_existing_subdir_name(current_parent, part)
+    for index, part in enumerate(category_parts):
+        # Taxonomy names are exact: punctuation distinguishes C++ from C#.
+        # Only fiction author/series folders may reuse spelling variants.
+        is_fiction_detail = category_parts[0] == "Художественные" and index >= 2
+        resolved_part = _resolve_existing_subdir_name(current_parent, part) if is_fiction_detail else part
         category_path_parts.append(resolved_part)
         current_parent = os.path.join(current_parent, resolved_part)
 
     category_folder = os.path.join(output_folder, *category_path_parts)
-    os.makedirs(category_folder, exist_ok=True)
 
     file_ext = os.path.splitext(file_path)[1]
     if category_path_parts == ["Другое"]:
@@ -194,10 +341,14 @@ def copy_book_to_category(file_path: str, title: str, author: str, category: str
     else:
         new_filename = sanitize_filename(f"{title} - {author}{file_ext}")
     destination = os.path.join(category_folder, new_filename)
-    destination = make_unique_destination(destination)
+
+    if dry_run:
+        print(f"📂 Категория (dry-run): {' | '.join(category_path_parts)}")
+        return destination
 
     try:
-        shutil.copy2(file_path, destination)
+        os.makedirs(long_path(category_folder), exist_ok=True)
+        destination = atomic_copy(file_path, destination)
         print(f"📂 Категория: {' | '.join(category_path_parts)}")
         return destination
     except Exception as e:

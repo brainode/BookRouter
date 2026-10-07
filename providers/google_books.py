@@ -6,7 +6,8 @@ import re
 import urllib.parse
 import urllib.request
 
-from .base import MetadataProvider, ProviderResult
+from normalization import normalize_isbn
+from .base import MetadataProvider, ProviderResult, best_candidate
 
 
 class GoogleBooksProvider(MetadataProvider):
@@ -16,14 +17,20 @@ class GoogleBooksProvider(MetadataProvider):
         self.timeout_sec = timeout_sec
 
     def _get_json(self, url: str) -> dict:
-        request = urllib.request.Request(url, headers={"User-Agent": "ScanBookShelf/1.0"})
+        request = urllib.request.Request(url, headers={"User-Agent": "BookRouter/1.0"})
         with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
             payload = response.read().decode("utf-8")
             return json.loads(payload)
 
-    def _pick_first_item(self, data: dict) -> dict:
-        items = data.get("items") or []
-        return items[0] if items else {}
+    def _result_from_item(self, item: dict, confidence: float) -> ProviderResult:
+        info = item.get("volumeInfo") or {}
+        title = str(info.get("title", "")).strip()
+        authors = info.get("authors") or []
+        return ProviderResult(
+            provider=self.name, title=title, author=str(authors[0]).strip() if authors else "",
+            isbn=self._extract_isbn13(info), series=self._extract_series_from_title(title),
+            confidence=confidence if title else 0.0, raw=item,
+        )
 
     def _extract_isbn13(self, volume_info: dict) -> str:
         identifiers = volume_info.get("industryIdentifiers") or []
@@ -59,27 +66,18 @@ class GoogleBooksProvider(MetadataProvider):
         except Exception:
             return None
 
-        item = self._pick_first_item(data)
-        if not item:
+        wanted = normalize_isbn(isbn)
+        if not wanted:
             return None
-        info = item.get("volumeInfo") or {}
-
-        title = str(info.get("title", "")).strip()
-        authors = info.get("authors") or []
-        author = str(authors[0]).strip() if authors else ""
-        isbn_value = self._extract_isbn13(info) or isbn
-        series = self._extract_series_from_title(title)
-
-        result = ProviderResult(
-            provider=self.name,
-            title=title,
-            author=author,
-            isbn=isbn_value,
-            series=series,
-            confidence=0.82 if title else 0.0,
-            raw=item,
-        )
-        return result if not result.is_empty else None
+        for item in data.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            identifiers = (item.get("volumeInfo") or {}).get("industryIdentifiers") or []
+            if any(normalize_isbn(str(identifier.get("identifier", ""))) == wanted for identifier in identifiers if isinstance(identifier, dict)):
+                result = self._result_from_item(item, 0.82)
+                result.isbn = wanted
+                return result
+        return None
 
     def lookup_by_title_author(self, title: str, author: str) -> ProviderResult | None:
         if not title:
@@ -95,24 +93,8 @@ class GoogleBooksProvider(MetadataProvider):
         except Exception:
             return None
 
-        item = self._pick_first_item(data)
-        if not item:
-            return None
-        info = item.get("volumeInfo") or {}
-
-        title_value = str(info.get("title", "")).strip()
-        authors = info.get("authors") or []
-        author_value = str(authors[0]).strip() if authors else ""
-        isbn_value = self._extract_isbn13(info)
-        series = self._extract_series_from_title(title_value)
-
-        result = ProviderResult(
-            provider=self.name,
-            title=title_value,
-            author=author_value,
-            isbn=isbn_value,
-            series=series,
-            confidence=0.66 if title_value else 0.0,
-            raw=item,
-        )
-        return result if not result.is_empty else None
+        results = [self._result_from_item(item, 0.66) for item in data.get("items") or [] if isinstance(item, dict)]
+        # A title match identifies a work, not the original book's edition/ISBN.
+        for result in results:
+            result.isbn = ""
+        return best_candidate(results, title, author)

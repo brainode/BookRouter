@@ -5,7 +5,8 @@ import json
 import urllib.parse
 import urllib.request
 
-from .base import MetadataProvider, ProviderResult
+from normalization import normalize_isbn
+from .base import MetadataProvider, ProviderResult, best_candidate
 
 
 class OpenLibraryProvider(MetadataProvider):
@@ -15,7 +16,7 @@ class OpenLibraryProvider(MetadataProvider):
         self.timeout_sec = timeout_sec
 
     def _get_json(self, url: str) -> dict:
-        request = urllib.request.Request(url, headers={"User-Agent": "ScanBookShelf/1.0"})
+        request = urllib.request.Request(url, headers={"User-Agent": "BookRouter/1.0"})
         with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
             payload = response.read().decode("utf-8")
             return json.loads(payload)
@@ -41,6 +42,10 @@ class OpenLibraryProvider(MetadataProvider):
         except Exception:
             return None
 
+        wanted = normalize_isbn(isbn)
+        identifiers = (book.get("isbn_13") or []) + (book.get("isbn_10") or [])
+        if not wanted or (identifiers and wanted not in {normalize_isbn(str(value)) for value in identifiers}):
+            return None
         title = str(book.get("title", "")).strip()
         author = ""
         authors = book.get("authors") or []
@@ -69,7 +74,7 @@ class OpenLibraryProvider(MetadataProvider):
             provider=self.name,
             title=title,
             author=author,
-            isbn=isbn,
+            isbn=wanted,
             series=series,
             series_index=series_index,
             confidence=0.93 if title else 0.75,
@@ -97,23 +102,15 @@ class OpenLibraryProvider(MetadataProvider):
         docs = data.get("docs") or []
         if not docs:
             return None
-        doc = docs[0]
-
-        title_value = str(doc.get("title", "")).strip()
-        author_names = doc.get("author_name") or []
-        author_value = str(author_names[0]).strip() if author_names else ""
-        isbns = doc.get("isbn") or []
-        isbn_value = str(isbns[0]).strip() if isbns else ""
-        series_list = doc.get("series") or []
-        series_value = str(series_list[0]).strip() if series_list else ""
-
-        result = ProviderResult(
-            provider=self.name,
-            title=title_value,
-            author=author_value,
-            isbn=isbn_value,
-            series=series_value,
-            confidence=0.74 if title_value else 0.0,
-            raw=doc,
-        )
-        return result if not result.is_empty else None
+        results = []
+        for doc in docs:
+            if not isinstance(doc, dict):
+                continue
+            authors = doc.get("author_name") or []
+            series = doc.get("series") or []
+            results.append(ProviderResult(
+                provider=self.name, title=str(doc.get("title", "")).strip(),
+                author=str(authors[0]).strip() if authors else "", isbn="",
+                series=str(series[0]).strip() if series else "", confidence=0.74, raw=doc,
+            ))
+        return best_candidate(results, title, author)

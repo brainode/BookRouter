@@ -1,0 +1,12 @@
+Extract bibliographic facts from the provided text.
+Return JSON only.
+If uncertain, keep the field empty.
+pub_year: year of this edition from the copyright or imprint page, 4 digits.
+publisher: publisher of this edition.
+edition: edition number as digits ("2" for "2-е издание" or "Second Edition"), empty for a first or unnumbered edition.
+
+Filename hint:
+{filename}
+
+Text:
+{excerpt}

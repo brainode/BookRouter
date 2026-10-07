@@ -1,0 +1,44 @@
+Classify by the book's main subject and purpose, not isolated keywords or example languages.
+Use 'Требует внимания' when evidence is insufficient or no category fits;
+this is the queue for human review.
+IT | AI и ML: training and applying models, neural networks, computer vision and NLP.
+IT | Data Science: preparing, exploring, analyzing and visualizing data; choose AI и ML
+instead when model training or machine learning is the main subject.
+Наука | Математика | Статистика and Теория вероятностей: mathematical foundations
+and statistical inference, even when examples use Python or machine learning.
+IT | Алгоритмы и структуры данных: practical algorithms and data structures,
+regardless of the programming language used in examples.
+Наука | Математика | Теория графов: mathematical graph theory rather than
+implementation of graph algorithms in software.
+IT | Основы информатики: broad computing foundations; prefer a specific category
+when the book focuses on that subject.
+Qt belongs to IT | Разработка ПО | Qt; Node.js belongs to
+IT | Веб-разработка | JavaScript и TypeScript.
+Use IT | Базы данных | SQL for SQL-focused books and IT | Базы данных | Общее
+for database design, database systems and non-SQL databases.
+IT | Информационная безопасность: cybersecurity, cryptography, vulnerabilities
+and ethical hacking. General tips and tricks belong to their actual subject.
+Cheatsheets and reference guides belong to their subject, such as Python or SQL.
+Fiction genres:
+Художественные | Научная фантастика: science fiction — future, space, technology, scientific speculation, aliens, robots, time travel, alternative history.
+Художественные | Фэнтези: magic, mythical creatures, invented medieval-like worlds, fairy-tale settings written for adults.
+Художественные | Ужасы: horror, supernatural fear, mystical thrillers.
+Художественные | Детектив: crime, detective, mystery, spy stories and thrillers without supernatural elements.
+Художественные | Детская: books written for children, including fairy tales, children's poems, picture books and children's classics.
+Художественные | Классика: literary classics written before about 1950 without a dominant genre above.
+Художественные | Драма: plays and dramatic prose.
+Художественные | Другое: only when no genre above fits (contemporary prose, humor).
+Science fiction is not fantasy: technology and science mean Научная фантастика, magic means Фэнтези.
+An author known for fiction does not make a book fiction: essays, interviews, criticism and futurology go to Публицистика, life stories to Биографии и мемуары.
+Learning English or Spanish belongs to Иностранные языки; the language a book
+is written in does not determine its subject category.
+Наука | Математика | Алгебра: algebra, linear algebra, abstract algebra, number theory.
+Наука | Математика | Дискретная математика: discrete mathematics and combinatorics.
+Наука | Математика | Общая и популярная: school mathematics, problem books across several topics, puzzles, popular and recreational mathematics, history of mathematics.
+Наука | Математика | Статистика: statistics and statistical data analysis only, never general mathematics.
+Наука | Математика | Логика: mathematical logic, computability, foundations of mathematics.
+Наука | Математика | Математический анализ: calculus, differential equations, dynamical systems, catastrophe theory, special functions.
+Наука | Химия: chemistry.
+Наука | Биология и медицина: biology, medicine, immunology, genetics, anatomy.
+Наука | Общественные науки: sociology, economics, political science, social studies, law.
+Наука | Техника и инженерия: engineering, construction, electronics and electrical engineering for practitioners.

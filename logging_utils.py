@@ -21,7 +21,7 @@ def _parse_level(raw: str) -> int:
 
 
 def setup_logging() -> logging.Logger:
-    logger = logging.getLogger("scanbookshelf")
+    logger = logging.getLogger("bookrouter")
     if logger.handlers:
         return logger
 
@@ -54,7 +54,7 @@ def setup_logging() -> logging.Logger:
 
 
 def install_print_logging(logger: logging.Logger):
-    if getattr(builtins, "_scanbookshelf_print_patched", False):
+    if getattr(builtins, "_bookrouter_print_patched", False):
         return
 
     def logged_print(*args, **kwargs):
@@ -68,10 +68,10 @@ def install_print_logging(logger: logging.Logger):
             logger.debug(message.rstrip("\n"))
 
     builtins.print = logged_print
-    builtins._scanbookshelf_print_patched = True
+    builtins._bookrouter_print_patched = True
 
 
 def restore_print():
     builtins.print = _ORIGINAL_PRINT
-    if hasattr(builtins, "_scanbookshelf_print_patched"):
-        delattr(builtins, "_scanbookshelf_print_patched")
+    if hasattr(builtins, "_bookrouter_print_patched"):
+        delattr(builtins, "_bookrouter_print_patched")

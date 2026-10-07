@@ -61,15 +61,27 @@ def _get_bool(name: str, default: bool) -> bool:
 
 _load_dotenv(Path(__file__).resolve().parent / ".env")
 
+PROMPTS_DIR = Path(_get_str("PROMPTS_DIR", str(Path(__file__).resolve().parent / "prompts")))
+
+
+def read_prompt(name: str) -> str:
+    """Текст промпта из PROMPTS_DIR; правится в веб-интерфейсе, поэтому не хранится в коде."""
+    return (PROMPTS_DIR / name).read_text(encoding="utf-8").strip("\n")
+
 OPENAI_API_KEY = _get_str("OPENAI_API_KEY", "")
 MODEL_NAME = _get_str("MODEL_NAME", "gemma3:12b")
 LLM_TEMPERATURE = _get_float("LLM_TEMPERATURE", 0.15)
 LLM_NUM_CTX = _get_int("LLM_NUM_CTX", 8192)
-LLM_NUM_PREDICT = _get_int("LLM_NUM_PREDICT", 220)
+LLM_NUM_PREDICT = _get_int("LLM_NUM_PREDICT", 400)
 LLM_KEEP_ALIVE = _get_str("LLM_KEEP_ALIVE", "20m")
+LLM_THINK = _get_bool("LLM_THINK", False)
+LLM_TIMEOUT_SEC = _get_float("LLM_TIMEOUT_SEC", 300.0)
 LLM_REQUEST_DELAY_SEC = _get_float("LLM_REQUEST_DELAY_SEC", 0.0)
+OLLAMA_HOST = _get_str("OLLAMA_HOST", "")
+LLM_CLASSIFY_TEMPERATURE = _get_float("LLM_CLASSIFY_TEMPERATURE", 0.0)
 EXTRACT_WORKERS = _get_int("EXTRACT_WORKERS", 2)
 PATH_ALIAS_THRESHOLD = _get_float("PATH_ALIAS_THRESHOLD", 0.88)
+CATEGORY_MIN_CONFIDENCE = _get_float("CATEGORY_MIN_CONFIDENCE", 0.6)
 ENRICH_ENABLED = _get_bool("ENRICH_ENABLED", True)
 ENRICH_HTTP_TIMEOUT = _get_int("ENRICH_HTTP_TIMEOUT", 8)
 ENRICH_RETRIES = _get_int("ENRICH_RETRIES", 2)
@@ -83,6 +95,7 @@ ARCHIVE_ZIP_ENABLED = _get_bool("ARCHIVE_ZIP_ENABLED", True)
 ARCHIVE_TEMP_ROOT = _get_str("ARCHIVE_TEMP_ROOT", "")
 ARCHIVE_MAX_MEMBER_SIZE_MB = _get_int("ARCHIVE_MAX_MEMBER_SIZE_MB", 250)
 ERRORS_SUBFOLDER = _get_str("ERRORS_SUBFOLDER", "Errors")
+RETRY_ERRORS = _get_bool("RETRY_ERRORS", True)
 
 MAX_PAGES = _get_int("MAX_PAGES", 8)
 MAX_TAIL_PAGES = _get_int("MAX_TAIL_PAGES", 4)
@@ -90,54 +103,17 @@ WORDS_PER_PAGES = _get_int("WORDS_PER_PAGES", 300)
 LANGUAGES = _get_str("LANGUAGES", "eng+rus")
 OCR_ENABLED = _get_bool("OCR_ENABLED", True)
 OCR_PAGE_TIMEOUT_SEC = _get_int("OCR_PAGE_TIMEOUT_SEC", 45)
+# Разрешение рендера страниц для OCR: выше 300 dpi Tesseract резко замедляется без выигрыша в качестве
+OCR_DPI = _get_int("OCR_DPI", 300)
 DDJVU_PAGE_TIMEOUT_SEC = _get_int("DDJVU_PAGE_TIMEOUT_SEC", 90)
 
 INPUT_BOOKS_FOLDER = _get_str("INPUT_BOOKS_FOLDER", "")
 OUTPUT_BOOKS_FOLDER = _get_str("OUTPUT_BOOKS_FOLDER", "")
 TESSERACT_CMD = _get_str("TESSERACT_CMD", "")
 
-CATEGORY_TREE = """
-Уровень 1 | Уровень 2 | Уровень 3
-Художественные | Классика |
-Художественные | Детская	
-Художественные | Фэнтези	
-Художественные | Sci-fi
-Художественные | Драма	
-Художественные | Детектив	
-Художественные | Ужасы	
-Художественные | Другое	
-История |		
-IT | Компьютерная графика и моделирование	
-IT | Администрирование	
-IT | AI and ML	
-IT | Алгоритмы	
-IT | Шпаргалки(Cheatsheets)	
-IT | Computer Science	
-IT | Data Science	
-IT | Devops	
-IT | Gamedev	
-IT | Core IT Knowledge	
-IT | Hacks	
-IT | Languages	C++
-IT | Languages	Rust
-IT | Languages	Qt
-IT | Languages	Go
-IT | Languages	Js and Typescript and Nodejs
-IT | Languages	Python
-IT | Languages	C#
-IT | Languages	SQL
-IT | Languages	Asm
-Иностранные языки |	English	
-Иностранные языки |	Spanish	
-Саморазвитие |		
-Психология |		
-Наука |	Геометрия	
-Наука |	Статистика	
-Наука |	Теория вероятностей	
-Наука |	Космос	
-Наука |	Физика	
-Наука |	Мат. Анализ	
-Наука |	Топология	
-Наука |	Логика	
-Наука |	Графы	
-"""
+CATEGORY_TREE = read_prompt("category_tree.txt")
+CATEGORY_RULES = read_prompt("category_rules.txt")
+FACTS_SYSTEM_PROMPT = read_prompt("facts_system.txt")
+FACTS_USER_PROMPT = read_prompt("facts_user.txt")
+CLASSIFY_SYSTEM_PROMPT = read_prompt("classify_system.txt")
+CLASSIFY_USER_PROMPT = read_prompt("classify_user.txt")

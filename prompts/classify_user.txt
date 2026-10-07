@@ -1,0 +1,7 @@
+Classify this book into exactly one category from the list.
+Return JSON only.
+
+Title: {title}
+Author: {author}
+{hints}Text excerpt:
+{excerpt}
