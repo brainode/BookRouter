@@ -113,3 +113,36 @@ def test_facts_edition_fields_validated(monkeypatch):
     assert (facts["pub_year"], facts["edition"], facts["publisher"]) == ("", "2", "Питер")
     data["edition"] = "1"
     assert llm.extract_book_facts("text", "f.pdf")["edition"] == ""
+
+
+def test_fb2_decisive_genres_are_allowed_categories():
+    import genres
+    assert set(genres.DECISIVE_FB2_GENRES.values()) <= set(llm.ALLOWED_CATEGORIES)
+
+
+def test_fb2_decision():
+    from genres import fb2_decision
+    assert fb2_decision(["sf_horror", "sf"]) == "Художественные | Ужасы"
+    assert fb2_decision(["sf"]) == ""
+    assert fb2_decision(["sf_fantasy", "sf_horror"]) == ""
+    assert fb2_decision(["child_tale", "sf_fantasy"]) == "Художественные | Детская"
+
+
+def test_decide_category_uses_fb2_without_llm(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("LLM called")
+    monkeypatch.setattr(llm, "_chat_json", boom)
+    assert llm.decide_category("t", "T", "A", ["child_tale"])["source"] == "fb2"
+
+
+def test_decide_category_passes_hints_to_llm(monkeypatch):
+    seen = {}
+
+    def chat(system, prompt, schema, temperature=None):
+        seen["prompt"] = prompt
+        return {"category": "Требует внимания", "confidence": 0.1}
+    monkeypatch.setattr(llm, "_chat_json", chat)
+    result = llm.decide_category("t", "T", "A", ["sf"], ["Fiction"])
+    assert "FB2 genre tags: sf" in seen["prompt"]
+    assert "Publisher subjects: Fiction" in seen["prompt"]
+    assert result["source"] == "llm"

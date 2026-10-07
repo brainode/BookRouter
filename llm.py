@@ -29,6 +29,7 @@ from config import (
     MODEL_NAME,
     OLLAMA_HOST,
 )
+from genres import fb2_decision, metadata_hints
 from normalization import (
     canonical_author_name,
     extract_first_valid_isbn,
@@ -281,12 +282,27 @@ def extract_book_facts(text: str, filename: str = "", interrupted_flag: bool | N
     }
 
 
-def classify_category(text: str, title: str, author: str, interrupted_flag: bool | None = None) -> dict[str, Any]:
+def decide_category(
+    text: str, title: str, author: str, fb2_genres=(), subjects=(), interrupted_flag: bool | None = None
+) -> dict[str, Any]:
+    decided = fb2_decision(list(fb2_genres))
+    if decided and decided in ALLOWED_CATEGORIES:
+        return {"category": decided, "confidence": 0.95, "review_reason": "",
+                "evidence": "Жанр из FB2: " + ", ".join(fb2_genres), "source": "fb2"}
+    result = classify_category(text, title, author, interrupted_flag=interrupted_flag,
+                               hints=metadata_hints(list(fb2_genres), list(subjects)))
+    return {**result, "source": "llm"}
+
+
+def classify_category(
+    text: str, title: str, author: str, interrupted_flag: bool | None = None, hints: str = ""
+) -> dict[str, Any]:
     if interrupted_flag:
         return {"category": DEFAULT_CATEGORY, "confidence": 0.0, "evidence": "", "review_reason": ""}
 
     categories_text = "\n".join(f"- {category}" for category in ALLOWED_CATEGORIES)
-    prompt = CLASSIFY_USER_PROMPT.format(title=title, author=author, excerpt=text[:9000])
+    hints_block = f"Metadata hints (may be imprecise):\n{hints}\n" if hints else ""
+    prompt = CLASSIFY_USER_PROMPT.format(title=title, author=author, excerpt=text[:9000], hints=hints_block)
     system_prompt = CLASSIFY_SYSTEM_PROMPT.format(rules=CATEGORY_RULES, categories=categories_text)
     model_data = _chat_json(system_prompt, prompt, CATEGORY_SCHEMA, temperature=LLM_CLASSIFY_TEMPERATURE)
     evidence = normalize_spaces(str(model_data.get("evidence", "")))[:300]

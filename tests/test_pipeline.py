@@ -54,7 +54,7 @@ def test_transient_llm_error_is_not_copied_to_errors(main, tmp_path, monkeypatch
 
 
 def test_no_text_book_uses_filename(main, tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "classify_category", lambda *a, **k: {"category": "Художественные | Детская", "confidence": 0.9})
+    monkeypatch.setattr(main, "decide_category", lambda *a, **k: {"category": "Художественные | Детская", "confidence": 0.9})
     source = _source(tmp_path)
     extracted = {"status": "error_no_text", "index": 1, "source": source, "isbn": "", "text": "", "error": "no_text_extracted", "content_hash": "h"}
     result = main.process_file(extracted, _NoopEnricher(), _options(main, tmp_path, dry_run=True))
@@ -82,7 +82,7 @@ def test_duplicate_skips_processing(main, tmp_path):
 
 
 def test_uncertain_book_is_queued_not_copied_to_errors(main, tmp_path, monkeypatch):
-    monkeypatch.setattr(main, "classify_category", lambda *a, **k: {
+    monkeypatch.setattr(main, "decide_category", lambda *a, **k: {
         "category": "Требует внимания", "confidence": 0.2, "review_reason": "insufficient_category_evidence"
     })
     source = _source(tmp_path)

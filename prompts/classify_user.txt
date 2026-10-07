@@ -3,5 +3,5 @@ Return JSON only.
 
 Title: {title}
 Author: {author}
-Text excerpt:
+{hints}Text excerpt:
 {excerpt}

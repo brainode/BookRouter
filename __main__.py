@@ -22,7 +22,7 @@ from config import (
 )
 from db import BookDB
 from interrupt import Interrupted, stop_event
-from llm import DEFAULT_CATEGORY, LLMUnavailableError, build_category_path, classify_category, extract_book_facts, warm_up_model
+from llm import DEFAULT_CATEGORY, LLMUnavailableError, build_category_path, decide_category, extract_book_facts, warm_up_model
 from logging_utils import install_print_logging, setup_logging
 from metadata_enricher import MetadataEnricher
 from normalization import extract_first_valid_isbn, is_unknown_label, normalize_isbn, parse_filename_hints
@@ -304,7 +304,10 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
         if status == "error_no_text" and metadata_source == "local":
             metadata_source = "filename"
 
-        category_data = classify_category(text, title_final, author_final, interrupted_flag=stop_event.is_set())
+        category_data = decide_category(
+            text, title_final, author_final, embedded.get("genres", []), embedded.get("subjects", []),
+            interrupted_flag=stop_event.is_set(),
+        )
         category_base = category_data.get("category", "")
         if category_base.startswith("Художественные | ") and not series_final:
             series_final = "Без серии"
@@ -345,7 +348,7 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "error_reason": category_data.get("review_reason", "") if category_base == DEFAULT_CATEGORY else "",
             "content_hash": content_hash,
             "category_evidence": category_data.get("evidence", ""),
-            "category_source": "llm",
+            "category_source": category_data.get("source", "llm"),
             "pub_year": facts.get("pub_year", ""),
             "publisher": facts.get("publisher", ""),
             "edition": facts.get("edition", ""),

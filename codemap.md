@@ -19,6 +19,7 @@
 | `sources.py` | обход входной папки и zip, `BookSource` | pipeline |
 | `reader.py` | извлечение текста PDF/DjVu/EPUB/FB2, OCR | pipeline |
 | `llm.py` | Ollama: факты, классификация, путь категории | pipeline |
+| `genres.py` | Жанры FB2 → категории, подсказки для классификатора | pipeline |
 | `normalization.py` | ISBN, slug, имена авторов, разбор имени файла | pipeline |
 | `metadata_enricher.py`, `providers/` | OpenLibrary / Google Books + кэш | pipeline |
 | `preflight.py` | проверка окружения перед прогоном | pipeline |
@@ -30,7 +31,7 @@
 | `export_results.py`, `truncate_db.py` | экспорт CSV, очистка БД | storage |
 | `tests/` | pytest | tests |
 
-Файлы, которые появятся по задачам (см. `TASKS.md`): `genres.py` (T44), `authors.py` (T47), `library_ops.py` + `library.py` (T48), `editions.py` (T50), `eval_quality.py` (T52), `webui/` + `webui.py` (T53+). Когда задача сделана, её модуль описывается в подкарте, а пометка «появится» снимается.
+Файлы, которые появятся по задачам (см. `TASKS.md`): `authors.py` (T47), `library_ops.py` + `library.py` (T48), `editions.py` (T50), `eval_quality.py` (T52), `webui/` + `webui.py` (T53+). Когда задача сделана, её модуль описывается в подкарте, а пометка «появится» снимается.
 
 ## Рецепты «что менять, если…»
 

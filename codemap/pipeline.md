@@ -39,6 +39,7 @@
 - `_parse_categories` → `ALLOWED_CATEGORIES`; `DEFAULT_CATEGORY = "Требует внимания"`; `CATEGORY_RULES`; `FACTS_SCHEMA`, `CATEGORY_SCHEMA`.
 - `_chat_raw` — единственный вызов Ollama (лестница параметров, `LLMUnavailableError`). `_chat_json` — опции + разбор JSON. `warm_up_model`.
 - `extract_book_facts(text, filename)` → `{title, author, isbn, confidence, language_hint, series_hint}`.
+- `decide_category(text, title, author, fb2_genres, subjects)` — точка входа классификации (`genres.fb2_decision` без LLM, иначе `classify_category` с `hints`), добавляет `source`.
 - `classify_category(text, title, author)` → `{category, confidence, review_reason, evidence}`; факты включают `pub_year/publisher/edition`; низкая уверенность → `DEFAULT_CATEGORY`.
 - `build_category_path(category, author, series)` — для `Художественные | Жанр` добавляет `author-slug | series-slug`.
 
@@ -53,3 +54,6 @@
 
 ## `preflight.py`
 `run_preflight(extensions, input, output, dry_run)` → список проблем: `check_folders`, `check_tesseract`, `check_djvu_tools`, `check_ollama`.
+
+## `genres.py`
+Точка входа классификации по метаданным: `DECISIVE_FB2_GENRES`, `fb2_decision(genres)` → категория или `""`, `metadata_hints(fb2_genres, subjects)`. Не импортирует `llm`.
