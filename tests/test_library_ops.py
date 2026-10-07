@@ -107,3 +107,33 @@ def test_category_destination_matches_copy(tmp_path):
     out = str(tmp_path / "out")
     args = ("a.pdf", "T", "A", "Художественные | Ужасы | king | bez-serii", out)
     assert category_destination(*args)[0] == copy_book_to_category(*args, dry_run=True)
+
+
+def test_set_author_genre_moves_and_undo(tmp_path):
+    from authors import create_author
+    from library_ops import set_author_genre
+    out = tmp_path / "out"
+    db = BookDB(str(tmp_path / "t.db"))
+    author = create_author(db, "Иван Петров", slug="petrov")
+    ids, files = [], []
+    for i, genre in enumerate(["Ужасы", "Детектив"]):
+        d = out / "Художественные" / genre / "petrov" / "Без серии"
+        d.mkdir(parents=True)
+        f = d / f"b{i}.pdf"
+        f.write_bytes(b"x%d" % i)
+        files.append(f)
+        ids.append(db.upsert_book(
+            "2026-01-01", f"b{i}.pdf", "p", None, "x", f"b{i}", "Иван Петров",
+            f"Художественные | {genre} | petrov | Без серии", str(f), origin_type="file",
+            origin_path=f"o{i}", status="ok", author_id=author["id"], book_genre=genre))
+    aid = set_author_genre(db, author["id"], "Ужасы", str(out))
+    row = _row(db, ids[1])
+    assert row["category"].split(" | ")[1] == "Ужасы"
+    assert os.path.isfile(row["new_path"]) and not files[1].exists()
+    assert db.conn.execute("SELECT genre FROM authors WHERE id=?", (author["id"],)).fetchone()[0] == "Ужасы"
+    undo_action(db, aid, str(out))
+    assert files[1].exists()
+    assert _row(db, ids[1])["category"].split(" | ")[1] == "Детектив"
+    assert db.conn.execute("SELECT genre FROM authors WHERE id=?", (author["id"],)).fetchone()[0] is None
+    with pytest.raises(LibraryOpError):
+        set_author_genre(db, author["id"], "Нет такого", str(out))

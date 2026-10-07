@@ -22,7 +22,7 @@ from config import (
 )
 from db import DONE_STATUSES, BookDB
 from interrupt import Interrupted, stop_event
-from authors import resolve_author
+from authors import FICTION_PREFIX, fiction_genre, genre_for_new_book, resolve_author
 from llm import DEFAULT_CATEGORY, LLMUnavailableError, build_category_path, decide_category, extract_book_facts, warm_up_model
 from logging_utils import install_print_logging, setup_logging
 from metadata_enricher import MetadataEnricher
@@ -150,6 +150,7 @@ def _error_result(source: BookSource, index: int, status: str, reason: str, text
         "fb2_genres": "",
         "subjects": "",
         "author_id": None,
+        "book_genre": "",
     }
 
 
@@ -314,6 +315,10 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
         if category_base.startswith("Художественные | ") and not series_final:
             series_final = "Без серии"
         author_row = resolve_author(db, author_final, create=not options.dry_run) if db is not None else None
+        book_genre = fiction_genre(category_base)
+        if book_genre:
+            genre = genre_for_new_book(db, author_row, book_genre, options.dry_run) if db is not None else book_genre
+            category_base = FICTION_PREFIX + genre
         category_path = build_category_path(category_base, author_final, series_final,
                                             author_slug=author_row["slug"] if author_row else None)
 
@@ -363,6 +368,7 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "fb2_genres": ",".join(embedded.get("genres", [])),
             "subjects": "; ".join(embedded.get("subjects", []))[:500],
             "author_id": author_row["id"] if author_row else None,
+            "book_genre": book_genre,
         }
 
         io_path = source.materialized_path or source.logical_path
@@ -506,6 +512,7 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         fb2_genres=result.get("fb2_genres"),
         subjects=result.get("subjects"),
         author_id=result.get("author_id"),
+        book_genre=result.get("book_genre"),
     )
     if result["status"] in ("ok", "duplicate", "needs_review") and previous:
         old_path = previous.get("new_path") or ""

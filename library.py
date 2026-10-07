@@ -10,7 +10,7 @@ import sys
 from config import OUTPUT_BOOKS_FOLDER
 from authors import add_alias, create_author, find_author, suggest_merges
 from db import DONE_STATUSES, BookDB
-from library_ops import LibraryOpError, merge_authors, prune_missing, undo_action
+from library_ops import LibraryOpError, _genre_move_steps, merge_authors, prune_missing, set_author_genre, undo_action
 
 
 def cmd_actions(db, args) -> int:
@@ -106,6 +106,72 @@ def cmd_merge_authors(db, args) -> int:
     return 0
 
 
+def cmd_backfill_genres(db, args) -> int:
+    from authors import fiction_genre
+    rows = db.conn.execute("SELECT id, category FROM books WHERE book_genre IS NULL "
+                           "AND category LIKE 'Художественные | %'").fetchall()
+    if args.apply:
+        for r in rows:
+            db.conn.execute("UPDATE books SET book_genre = ? WHERE id = ?", (fiction_genre(r["category"]), r["id"]))
+        db.conn.commit()
+    print(f"{'Обновлено' if args.apply else 'Будет обновлено (используй --apply)'}: {len(rows)}")
+    return 0
+
+
+def cmd_rebuild_fiction(db, args) -> int:
+    from authors import FICTION_PREFIX, get_author, majority_genre
+    from llm import ALLOWED_CATEGORIES
+    if db.conn.execute("SELECT 1 FROM books WHERE category LIKE 'Художественные | %' AND author_id IS NULL").fetchone():
+        print("⛔ У части художественных книг нет автора: сначала backfill-authors")
+        return 1
+    order = [c[len(FICTION_PREFIX):] for c in ALLOWED_CATEGORIES if c.startswith(FICTION_PREFIX)]
+    if args.author:
+        ids = [args.author]
+    else:
+        ids = [r[0] for r in db.conn.execute("SELECT DISTINCT author_id FROM books WHERE author_id IS NOT NULL "
+                                             "AND category LIKE 'Художественные | %' ORDER BY author_id")]
+    authors_n = moved_n = 0
+    first = last = None
+    for aid in ids:
+        author = get_author(db, aid)
+        if author is None:
+            raise LibraryOpError(f"Автор #{aid} не найден")
+        genres = [r[0] for r in db.conn.execute("SELECT book_genre FROM books WHERE author_id = ? "
+                                                "AND category LIKE 'Художественные | %'", (aid,)) if r[0]]
+        genre = majority_genre(genres, order)
+        if not genre:
+            continue
+        moves = len(_genre_move_steps(db, aid, genre, args.output))
+        print(f"{author['name']} | было жанров {len(set(genres))} | {genre} | переносится {moves}")
+        if args.apply:
+            action_id = set_author_genre(db, aid, genre, args.output)
+            if action_id is not None:
+                authors_n += 1
+                moved_n += moves
+                first = action_id if first is None else first
+                last = action_id
+        else:
+            authors_n += bool(moves)
+            moved_n += moves
+    tail = f", действия #{first}–#{last}" if first is not None else ""
+    print(f"авторов {authors_n}, книг перенесено {moved_n}{tail}" + ("" if args.apply else " (план; добавь --apply)"))
+    return 0
+
+
+def cmd_set_author_genre(db, args) -> int:
+    if not args.apply:
+        from authors import get_author
+        author = get_author(db, args.author_id)
+        if author is None:
+            raise LibraryOpError(f"Автор #{args.author_id} не найден")
+        print(f"{author['name']}: переносится книг {len(_genre_move_steps(db, args.author_id, args.genre, args.output))}"
+              " (план; добавь --apply)")
+        return 0
+    action_id = set_author_genre(db, args.author_id, args.genre, args.output)
+    print("Без изменений" if action_id is None else f"✅ действие #{action_id}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Обслуживание библиотеки BookRouter")
     parser.add_argument("--db", default="books.db")
@@ -131,6 +197,18 @@ def main(argv=None) -> int:
     p.add_argument("sources", type=int, nargs="+")
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=cmd_merge_authors)
+    p = sub.add_parser("backfill-genres")
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_backfill_genres)
+    p = sub.add_parser("rebuild-fiction")
+    p.add_argument("--apply", action="store_true")
+    p.add_argument("--author", type=int)
+    p.set_defaults(func=cmd_rebuild_fiction)
+    p = sub.add_parser("set-author-genre")
+    p.add_argument("author_id", type=int)
+    p.add_argument("genre")
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_set_author_genre)
     args = parser.parse_args(argv)
     if not os.path.exists(args.db):
         parser.error("Database does not exist")

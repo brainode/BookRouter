@@ -64,3 +64,12 @@ def test_merge_authors_moves_fiction_and_undo(tmp_path):
     assert db.conn.execute("SELECT 1 FROM authors WHERE id=?", (source["id"],)).fetchone()
     alias = db.conn.execute("SELECT author_id FROM author_aliases WHERE name='Стивен Кинг'").fetchone()
     assert alias["author_id"] == source["id"]
+
+
+def test_majority_genre():
+    from authors import majority_genre
+    order = ["Научная фантастика", "Фэнтези", "Ужасы", "Другое"]
+    assert majority_genre(["Ужасы", "Ужасы", "Другое", "Фэнтези"], order) == "Ужасы"
+    assert majority_genre(["Другое", "Другое", "Фэнтези"], order) == "Фэнтези"
+    assert majority_genre(["Другое"], order) == "Другое"
+    assert majority_genre(["Фэнтези", "Научная фантастика"], order) == "Научная фантастика"

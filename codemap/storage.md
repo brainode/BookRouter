@@ -51,7 +51,7 @@ CLI: `actions [--limit]`, `undo ACTION_ID`, `prune-missing [--apply]` (функ�
 - `editions.py` (T50) — `work_key`, `edition_relation`, `quality_key`, `edition_label`.
 
 ## `authors.py` (T48)
-Таблицы `authors(id,name,slug,genre,created_at)`, `author_aliases(alias_key PK,author_id,initial_key,name)`, колонка `books.author_id`. Функции: `name_parts`, `alias_key`, `initial_key`, `phonetic_key`, `get_author`, `create_author`, `add_alias`, `find_author`, `resolve_author`, `suggest_merges`. Слияние — `library_ops.merge_authors(db, target, sources, output)`. CLI `library.py`: `backfill-authors [--apply]`, `suggest-authors [--limit]`, `merge-authors TARGET SOURCE… [--apply]`.
+Таблицы `authors(id,name,slug,genre,created_at)`, `author_aliases(alias_key PK,author_id,initial_key,name)`, колонка `books.author_id`. Функции: `name_parts`, `alias_key`, `initial_key`, `phonetic_key`, `get_author`, `create_author`, `add_alias`, `find_author`, `resolve_author`, `suggest_merges`. Слияние — `library_ops.merge_authors(db, target, sources, output)`. CLI `library.py`: `backfill-authors [--apply]`, `suggest-authors [--limit]`, `merge-authors TARGET SOURCE… [--apply]`, `backfill-genres [--apply]`, `rebuild-fiction [--apply] [--author ID]`, `set-author-genre AUTHOR_ID GENRE [--apply]`. Колонка `books.book_genre` (жанр самой книги; путь худлита использует `authors.genre`). `authors.fiction_genre`, `genre_for_new_book`, `majority_genre`; `library_ops.set_author_genre(db, author_id, genre, output)`.
 
 ## Папки в OUTPUT
 `<категория>/…` — книги; `Errors/{file,zip}/…` — ошибки; `Требует внимания/` — очередь проверки; `_Дубли/` (T50) — худшие экземпляры того же издания; `_Корзина/` (T48) — «удалённые» вручную.

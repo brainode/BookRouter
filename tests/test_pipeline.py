@@ -198,3 +198,35 @@ def test_process_file_uses_author_slug(main, tmp_path, monkeypatch):
     result = main.process_file(extracted, _NoopEnricher(), _options(main, tmp_path), db=db)
     assert "custom-slug" in result["category"]
     assert result["author_id"] == author["id"]
+
+
+def _genre_run(main, tmp_path, monkeypatch, genre, dry_run=False):
+    from authors import create_author
+    from db import BookDB
+
+    monkeypatch.setattr(main, "decide_category", lambda *a, **k: {"category": "Художественные | Фэнтези", "confidence": 0.9})
+    db = BookDB(str(tmp_path / "t.db"))
+    author = create_author(db, "Иван Петров", slug="ivan-petrov")
+    if genre:
+        db.conn.execute("UPDATE authors SET genre = ? WHERE id = ?", (genre, author["id"]))
+        db.conn.commit()
+    source = _source(tmp_path)
+    extracted = {"status": "error_no_text", "index": 1, "source": source, "isbn": "", "text": "", "error": "no_text_extracted", "content_hash": "h"}
+    result = main.process_file(extracted, _NoopEnricher(), _options(main, tmp_path, dry_run), db=db)
+    return db, author, result
+
+
+def test_second_book_uses_author_genre(main, tmp_path, monkeypatch):
+    _, _, result = _genre_run(main, tmp_path, monkeypatch, "Ужасы")
+    assert result["category"].startswith("Художественные | Ужасы | ivan-petrov")
+    assert result["book_genre"] == "Фэнтези"
+
+
+def test_first_book_sets_author_genre(main, tmp_path, monkeypatch):
+    db, author, _ = _genre_run(main, tmp_path, monkeypatch, None)
+    assert db.conn.execute("SELECT genre FROM authors WHERE id=?", (author["id"],)).fetchone()[0] == "Фэнтези"
+
+
+def test_first_book_dry_run_keeps_genre_null(main, tmp_path, monkeypatch):
+    db, author, _ = _genre_run(main, tmp_path, monkeypatch, None, dry_run=True)
+    assert db.conn.execute("SELECT genre FROM authors WHERE id=?", (author["id"],)).fetchone()[0] is None

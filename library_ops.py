@@ -246,6 +246,8 @@ def merge_authors(db, target_id: int, source_ids: list[int], output_folder: str)
         parts = category.split(" | ")
         if category.startswith("Художественные | ") and len(parts) >= 3:
             parts[2] = target["slug"]
+            if target.get("genre"):
+                parts[1] = target["genre"]
             steps.append(plan_book_step(db, book["id"], output_folder, category=" | ".join(parts),
                                         updates={"author_id": target_id}, fuzzy_from_level=3))
         else:
@@ -260,3 +262,33 @@ def merge_authors(db, target_id: int, source_ids: list[int], output_folder: str)
         steps.append({"kind": "row", "table": "authors", "key": "id", "key_value": src["id"], "after": None})
     names = ", ".join(s["name"] for s in sources)
     return run_action(db, "merge_authors", f"Слияние авторов: {names} → {target['name']}", steps, output_folder)
+
+
+def _genre_move_steps(db, author_id: int, genre: str, output_folder: str) -> list[dict]:
+    steps = []
+    for book in db.conn.execute("SELECT id, category FROM books WHERE author_id = ? AND new_path != '' "
+                                "AND category LIKE 'Художественные | %' ORDER BY id", (author_id,)).fetchall():
+        parts = (book["category"] or "").split(" | ")
+        if len(parts) < 2 or parts[1] == genre:
+            continue
+        parts[1] = genre
+        steps.append(plan_book_step(db, book["id"], output_folder, category=" | ".join(parts),
+                                    fuzzy_from_level=3))
+    return steps
+
+
+def set_author_genre(db, author_id: int, genre: str, output_folder: str) -> int | None:
+    from authors import FICTION_PREFIX, get_author
+    from llm import ALLOWED_CATEGORIES
+    author = get_author(db, author_id)
+    if author is None:
+        raise LibraryOpError(f"Автор #{author_id} не найден")
+    if FICTION_PREFIX + genre not in ALLOWED_CATEGORIES:
+        raise LibraryOpError(f"Неизвестный жанр: {genre}")
+    steps = _genre_move_steps(db, author_id, genre, output_folder)
+    if not steps and author.get("genre") == genre:
+        return None
+    after = dict(author)
+    after["genre"] = genre
+    steps.insert(0, {"kind": "row", "table": "authors", "key": "id", "key_value": author_id, "after": after})
+    return run_action(db, "set_author_genre", f"Жанр автора {author['name']}: {genre}", steps, output_folder)

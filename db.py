@@ -52,7 +52,8 @@ CREATE TABLE IF NOT EXISTS books (
     quality INTEGER,
     fb2_genres TEXT,
     subjects TEXT,
-    author_id INTEGER
+    author_id INTEGER,
+    book_genre TEXT
 );
 """
 
@@ -168,6 +169,7 @@ BOOK_COLUMN_MIGRATIONS = {
     "fb2_genres": "TEXT",
     "subjects": "TEXT",
     "author_id": "INTEGER",
+    "book_genre": "TEXT",
 }
 
 
@@ -243,6 +245,7 @@ class BookDB:
         fb2_genres: Optional[str] = None,
         subjects: Optional[str] = None,
         author_id: Optional[int] = None,
+        book_genre: Optional[str] = None,
     ) -> int:
         cursor = self.conn.cursor()
         existing = self.find_book_by_origin(origin_type, origin_path)
@@ -259,7 +262,7 @@ class BookDB:
                     error_reason = ?, new_path = ?, content_hash = ?, category_confidence = ?, facts_confidence = ?,
                     source_size = ?, source_mtime_ns = ?,
                     category_evidence = ?, category_source = ?, pub_year = ?, publisher = ?, edition = ?,
-                    book_format = ?, page_count = ?, has_text_layer = ?, quality = ?, fb2_genres = ?, subjects = ?, author_id = ?
+                    book_format = ?, page_count = ?, has_text_layer = ?, quality = ?, fb2_genres = ?, subjects = ?, author_id = ?, book_genre = ?
                 WHERE id = ?
                 """,
                 (
@@ -303,6 +306,7 @@ class BookDB:
                     fb2_genres,
                     subjects,
                     author_id,
+                    book_genre,
                     existing["id"],
                 ),
             )
@@ -319,9 +323,9 @@ class BookDB:
                 metadata_confidence, provider_match_score, status,
                 error_reason, new_path, content_hash, category_confidence, facts_confidence, source_size, source_mtime_ns,
                 category_evidence, category_source, pub_year, publisher, edition,
-                book_format, page_count, has_text_layer, quality, fb2_genres, subjects, author_id
+                book_format, page_count, has_text_layer, quality, fb2_genres, subjects, author_id, book_genre
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time_added,
@@ -364,6 +368,7 @@ class BookDB:
                 fb2_genres,
                 subjects,
                 author_id,
+                book_genre,
             ),
         )
         self.conn.commit()

@@ -14,7 +14,7 @@
 | `_duplicate_result` | результат `duplicate` |
 | `extract_file_data` | в потоке: подпись источника, распаковка zip, отпечаток, поиск побайтового дубля, `reader.extract_text_with_ends`, ISBN из текста. Возвращает stage-dict (`status`, `text`, `isbn`, `content_hash`, …) |
 | `_facts_from_filename` | факты из имени файла для книг без текста |
-| `process_file` | главный этап: `extract_book_facts` → `enricher.enrich` → `authors.resolve_author(db, …)` (slug папки автора, `author_id`; `db` передаёт `main`) → `classify_category` → `build_category_path` → `copy_book_to_category`. Возвращает result-dict |
+| `process_file` | главный этап: `extract_book_facts` → `enricher.enrich` → `authors.resolve_author(db, …)` (slug папки автора, `author_id`; `db` передаёт `main`) → `classify_category` → жанр автора (`authors.genre_for_new_book`, `book_genre`) → `build_category_path` → `copy_book_to_category`. Возвращает result-dict |
 | `iter_extracted_files` | упорядоченная предвыборка извлечения в `ThreadPoolExecutor` |
 | `_store_result` | `db.upsert_book` + удаление устаревшей копии из `Errors`/`Требует внимания` |
 | `_csv_row`, `_reason_key`, `_print_summary` | CSV dry-run и итоговая сводка |

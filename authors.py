@@ -149,3 +149,38 @@ def suggest_merges(db, limit: int = 50) -> list[dict]:
                 pairs.append({"a": a, "b": b, "reason": reason})
     pairs.sort(key=lambda p: (p["reason"] != "звучит одинаково", -(p["a"]["books"] + p["b"]["books"])))
     return pairs[:limit]
+
+
+FICTION_PREFIX = "Художественные | "
+
+
+def fiction_genre(category: str) -> str:
+    """'Ужасы' для 'Художественные | Ужасы | …', иначе ''."""
+    parts = [p.strip() for p in category.split("|")]
+    return parts[1] if len(parts) >= 2 and parts[0] == "Художественные" else ""
+
+
+def genre_for_new_book(db, author_row: dict | None, book_genre: str, dry_run: bool) -> str:
+    """Жанр для пути новой книги. Первый жанр автора закрепляется за ним."""
+    if not author_row or not book_genre:
+        return book_genre
+    if author_row.get("genre"):
+        return author_row["genre"]
+    if not dry_run:
+        db.conn.execute("UPDATE authors SET genre = ? WHERE id = ?", (book_genre, author_row["id"]))
+        db.conn.commit()
+    return book_genre
+
+
+def majority_genre(genres: list[str], order: list[str]) -> str:
+    """Самый частый жанр; «Другое» не считается, если есть другие; ничья — кто раньше в order."""
+    genres = [g for g in genres if g]
+    if not genres:
+        return ""
+    real = [g for g in genres if g != "Другое"]
+    pool = real or genres
+    counts: dict[str, int] = {}
+    for g in pool:
+        counts[g] = counts.get(g, 0) + 1
+    rank = {g: i for i, g in enumerate(order)}
+    return min(counts, key=lambda g: (-counts[g], rank.get(g, len(rank)), g))
