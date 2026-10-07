@@ -19,6 +19,11 @@ import pytesseract
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 from PIL import Image
 
+# Книги — локальные файлы пользователя, а не загрузки из сети: защита от «бомб» PIL мешает огромным сканам
+Image.MAX_IMAGE_PIXELS = 400_000_000
+# Больше этого Tesseract не нужен: страница рендерится с меньшим dpi
+MAX_OCR_PIXELS = 60_000_000
+
 from config import (
     DDJVU_PAGE_TIMEOUT_SEC,
     LANGUAGES,
@@ -151,9 +156,16 @@ def ocr_image(img) -> str:
         raise ExtractError(f"ocr_failed:{exc}") from exc
 
 
+def _ocr_dpi_for_page(width_pt: float, height_pt: float) -> int:
+    """dpi рендера страницы PDF: OCR_DPI, но не больше MAX_OCR_PIXELS пикселей (нижняя граница 10 dpi)."""
+    area_in2 = max(width_pt, 1.0) * max(height_pt, 1.0) / (72 * 72)
+    limit = int((MAX_OCR_PIXELS / area_in2) ** 0.5)
+    return max(10, min(OCR_DPI, limit))
+
+
 def perform_ocr_on_page(page):
     """Выполняет OCR на одной странице PDF"""
-    pix = page.get_pixmap(dpi=OCR_DPI)
+    pix = page.get_pixmap(dpi=_ocr_dpi_for_page(page.rect.width, page.rect.height))
     with Image.open(io.BytesIO(pix.tobytes(output="png"))) as img:
         return ocr_image(img)
 

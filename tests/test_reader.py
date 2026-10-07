@@ -189,3 +189,14 @@ def test_quality_score_order():
     q = reader.quality_score
     assert q("pdf", False) > q("djvu", False) > q("pdf", True)
     assert q("epub", False) == 300
+
+
+def test_ocr_dpi_for_normal_page():
+    assert reader._ocr_dpi_for_page(595, 842) == reader.OCR_DPI
+
+
+
+def test_ocr_dpi_for_huge_page():
+    dpi = reader._ocr_dpi_for_page(14400, 14400)
+    assert 10 <= dpi < reader.OCR_DPI
+    assert (14400 / 72 * dpi) ** 2 <= reader.MAX_OCR_PIXELS * 1.01
