@@ -146,6 +146,18 @@ CREATE TABLE IF NOT EXISTS work_reviews (
 );
 """
 
+CREATE_GOLDEN_SQL = """
+CREATE TABLE IF NOT EXISTS golden (
+    book_id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    author TEXT NOT NULL,
+    category TEXT NOT NULL,
+    pub_year TEXT NOT NULL DEFAULT '',
+    edition TEXT NOT NULL DEFAULT '',
+    verified_at TEXT NOT NULL
+);
+"""
+
 DONE_STATUSES = ("ok", "duplicate", "needs_review", "same_edition", "trashed")
 
 BOOK_COLUMN_MIGRATIONS = {
@@ -204,6 +216,7 @@ class BookDB:
         cursor.executescript(CREATE_METADATA_CACHE_SQL)
         cursor.executescript(CREATE_AUTHORS_SQL)
         cursor.executescript(CREATE_WORK_REVIEWS_SQL)
+        cursor.executescript(CREATE_GOLDEN_SQL)
         cursor.executescript(CREATE_INDEX_SQL)
         cursor.executescript(CREATE_ACTIONS_LOG_SQL)
         self.conn.commit()

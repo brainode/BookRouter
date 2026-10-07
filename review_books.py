@@ -56,6 +56,7 @@ def main(argv=None):
     parser.add_argument("--title")
     parser.add_argument("--author")
     parser.add_argument("--series")
+    parser.add_argument("--verify", type=int, nargs="+", metavar="ID", help="добавить книги в эталон")
     args = parser.parse_args(argv)
     if args.resolve is not None and not args.category:
         parser.error("--resolve requires --category")
@@ -63,7 +64,13 @@ def main(argv=None):
         parser.error("Database does not exist")
     db = BookDB(args.db)
     try:
-        if args.resolve is not None:
+        if args.verify:
+            from eval_quality import add_golden
+            for book_id in args.verify:
+                add_golden(db, book_id)
+            count = db.conn.execute("SELECT COUNT(*) FROM golden").fetchone()[0]
+            print(f"в эталоне {count} книг")
+        elif args.resolve is not None:
             print(resolve_book(db, args.resolve, args.category, args.output, args.title, args.author, args.series))
         else:
             for row in db.conn.execute("SELECT id, title, error_reason, new_path FROM books WHERE status = 'needs_review' ORDER BY id"):

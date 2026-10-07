@@ -43,6 +43,8 @@
 
 Колонки `books.work_key` (индекс), `books.same_as_id`; таблица `work_reviews(work_key PK, decision, decided_at)`.
 
+Таблица `golden` (эталон: book_id PK, title, author, category-база, pub_year, edition, verified_at) — T52; наполняется `review_books.py --verify ID...` (`eval_quality.add_golden`). Модуль `eval_quality.py`: `category_base`, `fb2_agreement`, `consistency`, `run_golden`, `sample_for_review`; CLI `python eval_quality.py fb2|consistency|run|sample`.
+
 ## `library_ops.py`
 `plan_book_step`, `apply_steps`, `record_action`, `run_action`, `undo_action`, `trash_book`, `prune_missing`, `LibraryOpError`, `TRASH_FOLDER`, `DUPLICATES_FOLDER`. Единственное место, где книги перемещаются после копирования; шаги `book`/`row` пишутся в `actions_log`.
 
