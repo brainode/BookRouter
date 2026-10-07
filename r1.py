@@ -113,6 +113,8 @@ def cmd_apply(args):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("command", choices=["plan", "apply"])
     parser.add_argument("--db", default=os.path.join(HERE, "books.db"))
