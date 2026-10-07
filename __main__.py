@@ -22,7 +22,7 @@ from config import (
 )
 from db import DONE_STATUSES, BookDB
 from interrupt import Interrupted, stop_event
-from authors import FICTION_PREFIX, fiction_genre, genre_for_new_book, resolve_author
+from authors import category_path_for_book, fiction_genre, resolve_author
 from llm import DEFAULT_CATEGORY, LLMUnavailableError, build_category_path, decide_category, extract_book_facts, warm_up_model
 from logging_utils import install_print_logging, setup_logging
 from metadata_enricher import MetadataEnricher
@@ -356,12 +356,9 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             category_base = category_data.get("category", "")
             if category_base.startswith("Художественные | ") and not series_final:
                 series_final = "Без серии"
-            book_genre = fiction_genre(category_base)
-            if book_genre:
-                genre = genre_for_new_book(db, author_row, book_genre, options.dry_run) if db is not None else book_genre
-                category_base = FICTION_PREFIX + genre
-            category_path = build_category_path(category_base, author_final, series_final,
-                                                author_slug=author_row["slug"] if author_row else None)
+            category_path, book_genre = category_path_for_book(
+                db, category_base, author_final, series_final, author_row["id"] if author_row else None,
+                options.dry_run)
 
         # Прерывание во время запросов к LLM: метаданные заглушечные, книгу не копируем
         if stop_event.is_set():

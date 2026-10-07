@@ -12,8 +12,8 @@ from config import OUTPUT_BOOKS_FOLDER
 from authors import add_alias, create_author, find_author, suggest_merges
 from db import DONE_STATUSES, BookDB
 from editions import edition_relation, parse_edition, quality_key, same_work, work_key, year_from_text
-from library_ops import (LibraryOpError, _genre_move_steps, merge_authors, prune_missing, resolve_same_edition,
-                         set_author_genre, undo_action)
+from library_ops import (LibraryOpError, _genre_move_steps, merge_authors, plan_book_step, prune_missing,
+                         resolve_same_edition, run_action, set_author_genre, undo_action)
 from reader import probe_book, quality_score
 
 
@@ -159,6 +159,64 @@ def cmd_rebuild_fiction(db, args) -> int:
             moved_n += moves
     tail = f", действия #{first}–#{last}" if first is not None else ""
     print(f"авторов {authors_n}, книг перенесено {moved_n}{tail}" + ("" if args.apply else " (план; добавь --apply)"))
+    return 0
+
+
+def cmd_reclassify(db, args) -> int:
+    import llm
+    import preflight
+    from authors import category_path_for_book
+    problems = preflight.check_ollama()
+    if problems:
+        for p in problems:
+            print(f"⛔ {p}")
+        return 2
+    if args.category:
+        path = args.category
+        rows = db.conn.execute("SELECT * FROM books WHERE status = 'ok' AND (category = ? OR category LIKE ?) "
+                               "ORDER BY id", (path, path + " | %")).fetchall()
+    else:
+        path = ""
+        rows = db.conn.execute("SELECT * FROM books WHERE status = 'needs_review' ORDER BY id").fetchall()
+    if args.limit:
+        rows = rows[:args.limit]
+    steps: list[dict] = []
+    try:
+        for r in rows:
+            decided = llm.decide_category(
+                r["preview_text"] or "", r["title"] or "", r["author"] or "",
+                r["fb2_genres"].split(",") if r["fb2_genres"] else [],
+                r["subjects"].split("; ") if r["subjects"] else [])
+            new = decided.get("category", "")
+            old = r["category"]
+            if new == llm.DEFAULT_CATEGORY:
+                print(f"{r['id']} | {r['title']} | {old} → осталась в проверке")
+                continue
+            fiction = new.startswith("Художественные | ")
+            series = r["series"] or ("Без серии" if fiction else "")
+            new_path, book_genre = category_path_for_book(db, new, r["author"] or "", series,
+                                                          r["author_id"], dry_run=True)
+            if new_path == old and r["status"] == "ok":
+                continue
+            step = plan_book_step(
+                db, r["id"], args.output, category=new_path,
+                updates={"category_confidence": decided.get("confidence", 0.0),
+                         "category_evidence": decided.get("evidence", ""),
+                         "category_source": decided.get("source", "llm"),
+                         "book_genre": book_genre or "", "status": "ok", "error_reason": ""},
+                fuzzy_from_level=3 if r["author_id"] else 2)
+            steps.append(step)
+            print(f"{r['id']} | {r['title']} | {old} → {new_path} | {decided.get('evidence', '')}")
+    except KeyboardInterrupt:
+        print("прервано, ничего не изменено")
+        return 130
+    print(f"изменится {len(steps)} из {len(rows)}")
+    if args.apply and steps:
+        label = path or "needs_review"
+        action_id = run_action(db, "reclassify", f"Переклассификация: {label} ({len(steps)} книг)", steps, args.output)
+        print(f"✅ действие #{action_id}")
+    elif not args.apply:
+        print("(план; добавь --apply)")
     return 0
 
 
@@ -318,6 +376,13 @@ def main(argv=None) -> int:
     p.add_argument("--apply", action="store_true")
     p.add_argument("--author", type=int)
     p.set_defaults(func=cmd_rebuild_fiction)
+    p = sub.add_parser("reclassify")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--category")
+    g.add_argument("--status", choices=["needs_review"])
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_reclassify)
     p = sub.add_parser("set-author-genre")
     p.add_argument("author_id", type=int)
     p.add_argument("genre")

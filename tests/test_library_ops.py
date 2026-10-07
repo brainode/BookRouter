@@ -137,3 +137,63 @@ def test_set_author_genre_moves_and_undo(tmp_path):
     assert db.conn.execute("SELECT genre FROM authors WHERE id=?", (author["id"],)).fetchone()[0] is None
     with pytest.raises(LibraryOpError):
         set_author_genre(db, author["id"], "Нет такого", str(out))
+
+
+def _reclass_args(out, **kw):
+    import argparse
+    base = dict(category=None, status=None, limit=0, apply=False, output=out)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _patch_reclass(monkeypatch, mapping):
+    import llm
+    import preflight
+    monkeypatch.setattr(preflight, "check_ollama", lambda: [])
+    monkeypatch.setattr(llm, "decide_category", lambda text, title, *a, **k: {
+        "category": mapping[title], "confidence": 0.9, "evidence": "ev", "source": "llm"})
+
+
+def test_reclassify_moves_changed_books(tmp_path, monkeypatch):
+    from library import cmd_reclassify
+    out = tmp_path / "out"
+    db = BookDB(str(tmp_path / "t.db"))
+    cat = "Наука | Математика | Статистика"
+    ids, files = [], []
+    for t in ("A", "B"):
+        d = out / "Наука" / "Математика" / "Статистика"
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{t}.pdf"
+        f.write_bytes(t.encode())
+        files.append(f)
+        ids.append(db.upsert_book("2026-01-01", f"{t}.pdf", "p", None, "x", t, "Au", cat, str(f),
+                                  origin_type="file", origin_path=f"o{t}", status="ok"))
+    _patch_reclass(monkeypatch, {"A": "Наука | Математика | Алгебра", "B": cat})
+    assert cmd_reclassify(db, _reclass_args(str(out), category=cat)) == 0
+    assert files[0].exists()
+    assert cmd_reclassify(db, _reclass_args(str(out), category=cat, apply=True)) == 0
+    row = _row(db, ids[0])
+    assert row["category"] == "Наука | Математика | Алгебра" and row["category_source"] == "llm"
+    assert os.path.isfile(row["new_path"]) and not files[0].exists() and files[1].exists()
+    aid = db.conn.execute("SELECT id FROM actions_log").fetchone()[0]
+    undo_action(db, aid, str(out))
+    assert files[0].exists() and _row(db, ids[0])["category"] == cat
+
+
+def test_reclassify_review_queue(tmp_path, monkeypatch):
+    from library import cmd_reclassify
+    from llm import DEFAULT_CATEGORY
+    out = tmp_path / "out"
+    d = out / DEFAULT_CATEGORY
+    d.mkdir(parents=True)
+    f = d / "R.pdf"
+    f.write_bytes(b"r")
+    db = BookDB(str(tmp_path / "t.db"))
+    bid = db.upsert_book("2026-01-01", "R.pdf", "p", None, "x", "R", "Au", DEFAULT_CATEGORY, str(f),
+                         origin_type="file", origin_path="oR", status="needs_review")
+    _patch_reclass(monkeypatch, {"R": "IT | AI и ML"})
+    assert cmd_reclassify(db, _reclass_args(str(out), status="needs_review", apply=True)) == 0
+    row = _row(db, bid)
+    assert row["status"] == "ok"
+    assert os.path.isfile(out / "IT" / "AI и ML" / "R - Au.pdf") or "AI и ML" in row["new_path"]
+    assert os.path.isfile(row["new_path"]) and not f.exists()

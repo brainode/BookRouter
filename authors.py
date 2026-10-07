@@ -172,6 +172,19 @@ def genre_for_new_book(db, author_row: dict | None, book_genre: str, dry_run: bo
     return book_genre
 
 
+def category_path_for_book(db, category_base: str, author: str, series: str, author_id: int | None,
+                           dry_run: bool) -> tuple[str, str]:
+    """Путь категории с учётом автора и (для худлита) жанра автора. Возвращает (путь, book_genre)."""
+    from llm import build_category_path
+    book_genre = fiction_genre(category_base)
+    author_row = get_author(db, author_id) if (author_id and db is not None) else None
+    if book_genre:
+        genre = genre_for_new_book(db, author_row, book_genre, dry_run) if db is not None else book_genre
+        category_base = FICTION_PREFIX + genre
+    path = build_category_path(category_base, author, series, author_slug=author_row["slug"] if author_row else None)
+    return path, book_genre
+
+
 def majority_genre(genres: list[str], order: list[str]) -> str:
     """Самый частый жанр; «Другое» не считается, если есть другие; ничья — кто раньше в order."""
     genres = [g for g in genres if g]
