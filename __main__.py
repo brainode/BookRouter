@@ -28,6 +28,8 @@ from logging_utils import install_print_logging, setup_logging
 from metadata_enricher import MetadataEnricher
 from normalization import extract_first_valid_isbn, is_unknown_label, normalize_isbn, parse_filename_hints
 from preflight import run_preflight
+from editions import edition_label, find_work_matches, parse_edition, quality_key, work_key
+from library_ops import LibraryOpError, resolve_same_edition
 from reader import OCRConfigError, extract_book, quality_score
 from sources import BookSource, cleanup_source, collect_book_sources, materialize_zip_member
 from utils import append_csv, copy_book_to_category, copy_to_errors, file_fingerprint, find_duplicate, long_path, remove_stale_error_copy, source_signature
@@ -151,12 +153,14 @@ def _error_result(source: BookSource, index: int, status: str, reason: str, text
         "subjects": "",
         "author_id": None,
         "book_genre": "",
+        "work_key": "",
+        "same_as_id": None,
     }
 
 
 def _attach_error_fallback(result: dict, source: BookSource, options: RunOptions) -> dict:
     # Временные ошибки не копируем в Errors: книга будет обработана в следующем запуске
-    if result.get("status") in ("ok", "needs_review", "interrupted", "duplicate", "error_transient"):
+    if result.get("status") in ("ok", "needs_review", "interrupted", "duplicate", "error_transient", "same_edition"):
         return result
 
     reason = result.get("error_reason", "unknown_error")
@@ -294,8 +298,10 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
         facts["pub_year"] = embedded.get("year") or facts.get("pub_year", "")
         facts["publisher"] = embedded.get("publisher") or facts.get("publisher", "")
         fmt = extracted.get("fmt", "")
-        ocr_used = bool(extracted.get("ocr_used"))
+        ocr_used = extracted.get("ocr_used", False)
+        page_count = extracted.get("page_count", 0)
         no_text = status == "error_no_text"
+        quality = 0 if no_text else quality_score(fmt, ocr_used)
 
         enriched = enricher.enrich(facts)
         title_final = enriched.get("title", "") or "Неизвестное название"
@@ -307,20 +313,55 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
         if status == "error_no_text" and metadata_source == "local":
             metadata_source = "filename"
 
-        category_data = decide_category(
-            text, title_final, author_final, embedded.get("genres", []), embedded.get("subjects", []),
-            interrupted_flag=stop_event.is_set(),
-        )
-        category_base = category_data.get("category", "")
-        if category_base.startswith("Художественные | ") and not series_final:
-            series_final = "Без серии"
         author_row = resolve_author(db, author_final, create=not options.dry_run) if db is not None else None
-        book_genre = fiction_genre(category_base)
-        if book_genre:
-            genre = genre_for_new_book(db, author_row, book_genre, options.dry_run) if db is not None else book_genre
-            category_base = FICTION_PREFIX + genre
-        category_path = build_category_path(category_base, author_final, series_final,
-                                            author_slug=author_row["slug"] if author_row else None)
+        edition = facts.get("edition") or parse_edition(title_final)
+        key = ""
+        same_edition_of = None
+        edition_category = ""
+        file_title = title_final
+        displace_ids: list[int] = []
+        if db is not None:
+            new_info = {"isbn_norm": isbn_norm, "edition": edition, "pub_year": facts.get("pub_year", ""),
+                        "publisher": facts.get("publisher", ""), "quality": quality, "page_count": page_count,
+                        "source_size": extracted.get("source_size")}
+            key = work_key(author_row["id"] if author_row else None, author_final, title_final)
+            previous = db.find_book_by_origin(source.origin_type, source.logical_path.replace("/", "\\"))
+            same, others = find_work_matches(db, key, new_info, exclude_id=previous["id"] if previous else None)
+            if same:
+                best = max(same, key=quality_key)
+                edition_category = best["category"]
+                if quality_key(new_info) <= quality_key(best):
+                    same_edition_of = best
+                else:
+                    displace_ids = [r["id"] for r in same]
+            else:
+                first_ok = next((r for r in others if r["status"] == "ok"), None)
+                if first_ok:
+                    edition_category = first_ok["category"]
+                    label = edition_label(edition, facts.get("pub_year", ""))
+                    if label:
+                        file_title = f"{title_final} ({label})"
+
+        if edition_category:
+            category_data = {"category": edition_category, "confidence": 1.0, "source": "edition", "evidence": ""}
+            category_base = category_path = edition_category
+            if category_base.startswith("Художественные | ") and not series_final:
+                series_final = "Без серии"
+            book_genre = fiction_genre(category_base)
+        else:
+            category_data = decide_category(
+                text, title_final, author_final, embedded.get("genres", []), embedded.get("subjects", []),
+                interrupted_flag=stop_event.is_set(),
+            )
+            category_base = category_data.get("category", "")
+            if category_base.startswith("Художественные | ") and not series_final:
+                series_final = "Без серии"
+            book_genre = fiction_genre(category_base)
+            if book_genre:
+                genre = genre_for_new_book(db, author_row, book_genre, options.dry_run) if db is not None else book_genre
+                category_base = FICTION_PREFIX + genre
+            category_path = build_category_path(category_base, author_final, series_final,
+                                                author_slug=author_row["slug"] if author_row else None)
 
         # Прерывание во время запросов к LLM: метаданные заглушечные, книгу не копируем
         if stop_event.is_set():
@@ -360,20 +401,31 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "category_source": category_data.get("source", "llm"),
             "pub_year": facts.get("pub_year", ""),
             "publisher": facts.get("publisher", ""),
-            "edition": facts.get("edition", ""),
+            "edition": edition,
             "book_format": fmt,
-            "page_count": extracted.get("page_count", 0),
+            "page_count": page_count,
             "has_text_layer": 0 if (no_text or ocr_used) else 1,
-            "quality": 0 if no_text else quality_score(fmt, ocr_used),
+            "quality": quality,
             "fb2_genres": ",".join(embedded.get("genres", [])),
             "subjects": "; ".join(embedded.get("subjects", []))[:500],
             "author_id": author_row["id"] if author_row else None,
             "book_genre": book_genre,
+            "work_key": key,
+            "same_as_id": None,
         }
+        if displace_ids:
+            result["displace_ids"] = displace_ids
+        if same_edition_of:
+            result["status"] = "same_edition"
+            result["new_path"] = same_edition_of["new_path"]
+            result["same_as_id"] = same_edition_of["id"]
+            result["error_reason"] = f"same_edition_of:{same_edition_of['id']}"
+            print(f"♻️ То же издание уже есть, копия не нужна: {title_final} - {author_final}")
+            return result
 
         io_path = source.materialized_path or source.logical_path
         new_path = copy_book_to_category(
-            io_path, title_final, author_final, category_path, options.output_folder, dry_run=options.dry_run,
+            io_path, file_title, author_final, category_path, options.output_folder, dry_run=options.dry_run,
             fuzzy_from_level=3 if author_row else 2,
         )
         if not new_path:
@@ -513,6 +565,8 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         subjects=result.get("subjects"),
         author_id=result.get("author_id"),
         book_genre=result.get("book_genre"),
+        work_key=result.get("work_key"),
+        same_as_id=result.get("same_as_id"),
     )
     if result["status"] in ("ok", "duplicate", "needs_review") and previous:
         old_path = previous.get("new_path") or ""
@@ -693,6 +747,11 @@ def main(argv: list[str] | None = None):
                     candidates = known_hashes.setdefault(content_hash, [])
                     if result["new_path"] not in candidates:
                         candidates.append(result["new_path"])
+                if result.get("displace_ids") and not options.dry_run:
+                    try:
+                        resolve_same_edition(db, book_id, result["displace_ids"], options.output_folder)
+                    except LibraryOpError as exc:
+                        print(f"⚠️ Не удалось убрать худший экземпляр: {exc}")
                 if options.dry_run:
                     append_csv(options.output_csv, _csv_row(result))
 
@@ -701,7 +760,7 @@ def main(argv: list[str] | None = None):
                     processed_ok += 1
                 elif result["status"] == "needs_review":
                     processed_review += 1
-                elif result["status"] == "duplicate":
+                elif result["status"] in ("duplicate", "same_edition"):
                     processed_duplicates += 1
                 else:
                     processed_errors += 1

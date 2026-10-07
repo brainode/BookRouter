@@ -53,7 +53,9 @@ CREATE TABLE IF NOT EXISTS books (
     fb2_genres TEXT,
     subjects TEXT,
     author_id INTEGER,
-    book_genre TEXT
+    book_genre TEXT,
+    work_key TEXT,
+    same_as_id INTEGER
 );
 """
 
@@ -105,6 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_books_origin ON books(origin_type, origin_path);
 CREATE INDEX IF NOT EXISTS idx_cache_expires_at ON metadata_cache(expires_at);
 CREATE INDEX IF NOT EXISTS idx_books_content_hash ON books(content_hash);
 CREATE INDEX IF NOT EXISTS idx_books_author_id ON books(author_id);
+CREATE INDEX IF NOT EXISTS idx_books_work_key ON books(work_key);
 """
 
 CREATE_ACTIONS_LOG_SQL = """
@@ -133,6 +136,14 @@ CREATE TABLE IF NOT EXISTS author_aliases (
     name TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_author_aliases_initial ON author_aliases(initial_key);
+"""
+
+CREATE_WORK_REVIEWS_SQL = """
+CREATE TABLE IF NOT EXISTS work_reviews (
+    work_key TEXT PRIMARY KEY,
+    decision TEXT NOT NULL,
+    decided_at TEXT NOT NULL
+);
 """
 
 DONE_STATUSES = ("ok", "duplicate", "needs_review", "same_edition", "trashed")
@@ -170,6 +181,8 @@ BOOK_COLUMN_MIGRATIONS = {
     "subjects": "TEXT",
     "author_id": "INTEGER",
     "book_genre": "TEXT",
+    "work_key": "TEXT",
+    "same_as_id": "INTEGER",
 }
 
 
@@ -190,6 +203,7 @@ class BookDB:
         cursor.executescript(CREATE_TRIGGERS_SQL)
         cursor.executescript(CREATE_METADATA_CACHE_SQL)
         cursor.executescript(CREATE_AUTHORS_SQL)
+        cursor.executescript(CREATE_WORK_REVIEWS_SQL)
         cursor.executescript(CREATE_INDEX_SQL)
         cursor.executescript(CREATE_ACTIONS_LOG_SQL)
         self.conn.commit()
@@ -246,6 +260,8 @@ class BookDB:
         subjects: Optional[str] = None,
         author_id: Optional[int] = None,
         book_genre: Optional[str] = None,
+        work_key: Optional[str] = None,
+        same_as_id: Optional[int] = None,
     ) -> int:
         cursor = self.conn.cursor()
         existing = self.find_book_by_origin(origin_type, origin_path)
@@ -262,7 +278,7 @@ class BookDB:
                     error_reason = ?, new_path = ?, content_hash = ?, category_confidence = ?, facts_confidence = ?,
                     source_size = ?, source_mtime_ns = ?,
                     category_evidence = ?, category_source = ?, pub_year = ?, publisher = ?, edition = ?,
-                    book_format = ?, page_count = ?, has_text_layer = ?, quality = ?, fb2_genres = ?, subjects = ?, author_id = ?, book_genre = ?
+                    book_format = ?, page_count = ?, has_text_layer = ?, quality = ?, fb2_genres = ?, subjects = ?, author_id = ?, book_genre = ?, work_key = ?, same_as_id = ?
                 WHERE id = ?
                 """,
                 (
@@ -307,6 +323,8 @@ class BookDB:
                     subjects,
                     author_id,
                     book_genre,
+                    work_key,
+                    same_as_id,
                     existing["id"],
                 ),
             )
@@ -323,9 +341,9 @@ class BookDB:
                 metadata_confidence, provider_match_score, status,
                 error_reason, new_path, content_hash, category_confidence, facts_confidence, source_size, source_mtime_ns,
                 category_evidence, category_source, pub_year, publisher, edition,
-                book_format, page_count, has_text_layer, quality, fb2_genres, subjects, author_id, book_genre
+                book_format, page_count, has_text_layer, quality, fb2_genres, subjects, author_id, book_genre, work_key, same_as_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 time_added,
@@ -369,6 +387,8 @@ class BookDB:
                 subjects,
                 author_id,
                 book_genre,
+                work_key,
+                same_as_id,
             ),
         )
         self.conn.commit()

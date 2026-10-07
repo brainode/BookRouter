@@ -292,3 +292,27 @@ def set_author_genre(db, author_id: int, genre: str, output_folder: str) -> int 
     after["genre"] = genre
     steps.insert(0, {"kind": "row", "table": "authors", "key": "id", "key_value": author_id, "after": after})
     return run_action(db, "set_author_genre", f"Жанр автора {author['name']}: {genre}", steps, output_folder)
+
+
+def resolve_same_edition(db, keep_id: int, other_ids: list[int], output_folder: str) -> int:
+    """Худшие экземпляры того же издания уходят в _Дубли; ссылки на них переключаются на лучший."""
+    keep = db.conn.execute("SELECT title FROM books WHERE id = ?", (keep_id,)).fetchone()
+    if keep is None:
+        raise LibraryOpError(f"Книга #{keep_id} не найдена")
+    other_ids = [i for i in other_ids if i != keep_id]
+    steps = [
+        plan_book_step(db, oid, output_folder, special_root=DUPLICATES_FOLDER,
+                       updates={"status": "same_edition", "same_as_id": keep_id,
+                                "error_reason": f"same_edition_of:{keep_id}"})
+        for oid in other_ids
+    ]
+    if other_ids:
+        marks = ",".join("?" * len(other_ids))
+        for row in db.conn.execute(
+            f"SELECT id, new_path FROM books WHERE same_as_id IN ({marks}) AND id NOT IN ({marks}) ORDER BY id",
+            other_ids + other_ids,
+        ).fetchall():
+            path = _bs(row["new_path"] or "")
+            steps.append({"kind": "book", "book_id": row["id"], "from": path, "to": path,
+                          "updates": {"same_as_id": keep_id}})
+    return run_action(db, "same_edition", f"Оставлен лучший экземпляр: {keep['title']}", steps, output_folder)

@@ -30,10 +30,11 @@
 | `review_books.py` | CLI очереди `needs_review` | storage |
 | `authors.py` | авторы: алиасы, slug папки, фонетические подсказки | storage |
 | `library_ops.py`, `library.py` | перенос книг с журналом/откатом, CLI обслуживания | storage |
+| `editions.py` | ключ произведения, отношение изданий, `find_work_matches` | pipeline |
 | `export_results.py`, `truncate_db.py` | экспорт CSV, очистка БД | storage |
 | `tests/` | pytest | tests |
 
-Файлы, которые появятся по задачам (см. `TASKS.md`): `editions.py` (T50), `eval_quality.py` (T52), `webui/` + `webui.py` (T53+). Когда задача сделана, её модуль описывается в подкарте, а пометка «появится» снимается.
+Файлы, которые появятся по задачам (см. `TASKS.md`): `eval_quality.py` (T52), `webui/` + `webui.py` (T53+). Когда задача сделана, её модуль описывается в подкарте, а пометка «появится» снимается.
 
 ## Рецепты «что менять, если…»
 

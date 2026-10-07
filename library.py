@@ -7,10 +7,14 @@ import argparse
 import os
 import sys
 
+from utils import long_path
 from config import OUTPUT_BOOKS_FOLDER
 from authors import add_alias, create_author, find_author, suggest_merges
 from db import DONE_STATUSES, BookDB
-from library_ops import LibraryOpError, _genre_move_steps, merge_authors, prune_missing, set_author_genre, undo_action
+from editions import edition_relation, parse_edition, quality_key, same_work, work_key, year_from_text
+from library_ops import (LibraryOpError, _genre_move_steps, merge_authors, prune_missing, resolve_same_edition,
+                         set_author_genre, undo_action)
+from reader import probe_book, quality_score
 
 
 def cmd_actions(db, args) -> int:
@@ -172,6 +176,116 @@ def cmd_set_author_genre(db, args) -> int:
     return 0
 
 
+def cmd_backfill_quality(db, args) -> int:
+    marks = ",".join("?" * len(DONE_STATUSES))
+    rows = db.conn.execute(
+        f"SELECT * FROM books WHERE status IN ({marks}) AND quality IS NULL AND new_path != '' ORDER BY id",
+        list(DONE_STATUSES)).fetchall()
+    rows = [r for r in rows if r["new_path"] and os.path.isfile(long_path(r["new_path"]))]
+    if args.limit:
+        rows = rows[:args.limit]
+    done = 0
+    for r in rows:
+        try:
+            info = probe_book(r["new_path"])
+        except Exception as exc:
+            print(f"⚠️ #{r['id']} {r['new_path']}: {exc}")
+            continue
+        emb = info.embedded or {}
+        values = {
+            "book_format": info.fmt, "page_count": info.page_count,
+            "has_text_layer": 0 if info.ocr_used else 1, "quality": quality_score(info.fmt, info.ocr_used),
+        }
+        if not r["fb2_genres"] and emb.get("genres"):
+            values["fb2_genres"] = ",".join(emb["genres"])
+        if not r["subjects"] and emb.get("subjects"):
+            values["subjects"] = "; ".join(emb["subjects"])[:500]
+        if not r["pub_year"] and emb.get("year"):
+            values["pub_year"] = emb["year"]
+        if not r["publisher"] and emb.get("publisher"):
+            values["publisher"] = emb["publisher"]
+        done += 1
+        if args.apply:
+            db.conn.execute(f"UPDATE books SET {', '.join(c + ' = ?' for c in values)} WHERE id = ?",
+                            list(values.values()) + [r["id"]])
+            if done % 100 == 0:
+                db.conn.commit()
+                print(f"… обработано {done} из {len(rows)}")
+    if args.apply:
+        db.conn.commit()
+    print(f"{'Обновлено' if args.apply else 'Будет обновлено (используй --apply)'}: {done}")
+    return 0
+
+
+def cmd_backfill_works(db, args) -> int:
+    rows = db.conn.execute(
+        "SELECT * FROM books WHERE status IN ('ok', 'needs_review', 'same_edition') ORDER BY id").fetchall()
+    for r in rows:
+        preview = r["preview_text"] or ""
+        edition = r["edition"] or parse_edition(f"{r['title'] or ''} {preview[:3000]}")
+        pub_year = r["pub_year"] or year_from_text(preview[:5000])
+        key = work_key(r["author_id"], r["author"] or "", r["title"] or "")
+        if args.apply:
+            db.conn.execute("UPDATE books SET edition = ?, pub_year = ?, work_key = ? WHERE id = ?",
+                            (edition, pub_year, key, r["id"]))
+    if args.apply:
+        db.conn.commit()
+    print(f"{'Обновлено' if args.apply else 'Будет обновлено (используй --apply)'}: {len(rows)}")
+    return 0
+
+
+def _clusters(db) -> list[list[dict]]:
+    skip = {r["work_key"] for r in db.conn.execute("SELECT work_key FROM work_reviews WHERE decision = 'different'")}
+    books = [dict(r) for r in db.conn.execute(
+        "SELECT * FROM books WHERE status = 'ok' AND work_key IS NOT NULL AND work_key != '' ORDER BY id")]
+    parent = list(range(len(books)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    groups: list[list[int]] = []
+    for i, b in enumerate(books):
+        if b["work_key"] in skip:
+            continue
+        for g in groups:
+            if same_work(books[g[0]]["work_key"], b["work_key"]):
+                g.append(i)
+                break
+        else:
+            groups.append([i])
+    for g in groups:
+        for x in range(len(g)):
+            for y in range(x + 1, len(g)):
+                if edition_relation(books[g[x]], books[g[y]]) == "same":
+                    parent[find(g[x])] = find(g[y])
+    clusters: dict[int, list[dict]] = {}
+    for g in groups:
+        for i in g:
+            clusters.setdefault(find(i), []).append(books[i])
+    return [c for c in clusters.values() if len(c) >= 2]
+
+
+def cmd_dedupe_editions(db, args) -> int:
+    clusters = _clusters(db)
+    moved = 0
+    for cluster in clusters:
+        best = max(cluster, key=quality_key)
+        rest = [b for b in cluster if b["id"] != best["id"]]
+        print(f"Оставить: #{best['id']} {best['title']} | {best['book_format']} | {best['page_count']} стр. | "
+              f"{best['source_size']} Б | {best['new_path']}")
+        for b in rest:
+            print(f"   уходит: #{b['id']} | {b['book_format']} | {b['page_count']} стр. | "
+                  f"{b['source_size']} Б | {b['new_path']}")
+        moved += len(rest)
+        if args.apply:
+            resolve_same_edition(db, best["id"], [b["id"] for b in rest], args.output)
+    print(f"Кластеров {len(clusters)}, экземпляров в _Дубли {moved}" + ("" if args.apply else " (план; добавь --apply)"))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Обслуживание библиотеки BookRouter")
     parser.add_argument("--db", default="books.db")
@@ -209,6 +323,16 @@ def main(argv=None) -> int:
     p.add_argument("genre")
     p.add_argument("--apply", action="store_true")
     p.set_defaults(func=cmd_set_author_genre)
+    p = sub.add_parser("backfill-quality")
+    p.add_argument("--apply", action="store_true")
+    p.add_argument("--limit", type=int, default=0)
+    p.set_defaults(func=cmd_backfill_quality)
+    p = sub.add_parser("backfill-works")
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_backfill_works)
+    p = sub.add_parser("dedupe-editions")
+    p.add_argument("--apply", action="store_true")
+    p.set_defaults(func=cmd_dedupe_editions)
     args = parser.parse_args(argv)
     if not os.path.exists(args.db):
         parser.error("Database does not exist")

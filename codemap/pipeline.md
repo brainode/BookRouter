@@ -21,7 +21,7 @@
 | `_select_sources` | фильтр `--only-ext`, пропуск уже обработанных неизменённых источников, `--limit` |
 | `main` | preflight → прогрев модели → цикл → экспорт CSV |
 
-Статусы: `ok`, `needs_review`, `duplicate`, `error_extract`, `error_archive`, `error_no_text`, `error_process`, `error_transient`, `interrupted` (не сохраняется), `fatal` (стоп прогона). После T50 добавится `same_edition`.
+Статусы: `ok`, `needs_review`, `duplicate`, `error_extract`, `error_archive`, `error_no_text`, `error_process`, `error_transient`, `interrupted` (не сохраняется), `fatal` (стоп прогона). `same_edition` (T50: то же издание уже есть, файл не копируется; `same_as_id`, `error_reason=same_edition_of:<id>`).
 
 ## `sources.py`
 `BookSource` (dataclass: `display_name`, `materialized_path`, `logical_path`, `origin_type` file|zip, `archive_path`, `archive_member`, `source_root`, `status_hint`, `error_reason`). `collect_book_sources(root, exclude_dirs)` → `(sources, stats)`. `materialize_zip_member`, `cleanup_source`. Расширения — `SUPPORTED_BOOK_EXTENSIONS`.
@@ -32,13 +32,14 @@
 - PDF: `extract_text_pdf`, `_pdf_pages_text`, `perform_ocr_on_page`. DjVu: `extract_text_djvu`, `_djvu_pages_text`, `_run_tool`, `prepare_book_path` (ASCII-копия). EPUB: `extract_text_epub`, `_epub_spine_paths`, `_epub_words`, `_pymupdf_text`. FB2: `extract_text_fb2`, `_read_fb2_bytes`.
 - OCR: `ocr_image`, `_ocr_pages`, `needs_ocr`, `_tail_ocr_needed`.
 - Исключения: `OCRConfigError` (окружение → fatal), `OCRTimeoutError`, `ExtractError` (книга → error_extract).
-- `ExtractedText` (head, tail, fmt, page_count, ocr_used, embedded) и `extract_book(path, head, tail)`; `quality_score(fmt, ocr_used)`; встроенные метаданные: `_fb2_metadata`, `_epub_metadata` (`_epub_opf_path`). Функции форматов принимают `stats`.
+- `ExtractedText` (head, tail, fmt, page_count, ocr_used, embedded) и `extract_book(path, head, tail)`; `quality_score(fmt, ocr_used)`; `probe_book(path, pages=3)` — дешёвая проверка без OCR (формат, страницы, текстовый слой, embedded); встроенные метаданные: `_fb2_metadata`, `_epub_metadata` (`_epub_opf_path`). Функции форматов принимают `stats`.
 
 ## `llm.py`
 Промпты и `CATEGORY_RULES` берутся из `config` (файлы `prompts/*.txt`).
 - `_parse_categories` → `ALLOWED_CATEGORIES`; `DEFAULT_CATEGORY = "Требует внимания"`; `CATEGORY_RULES`; `FACTS_SCHEMA`, `CATEGORY_SCHEMA`.
 - `_chat_raw` — единственный вызов Ollama (лестница параметров, `LLMUnavailableError`). `_chat_json` — опции + разбор JSON. `warm_up_model`.
 - `extract_book_facts(text, filename)` → `{title, author, isbn, confidence, language_hint, series_hint}`.
+- Шаг «издания» в `process_file` (между enrich и decide_category, только с БД): `editions.work_key` + `find_work_matches` → `same_edition` (без копирования), `displace_ids` (новый лучше; `main` вызывает `library_ops.resolve_same_edition`), либо категория первого `ok` с меткой издания в имени файла. Модуль `editions.py`: `parse_edition`, `volume_marker`, `title_core`, `year_from_text`, `work_key`, `same_work`, `edition_relation`, `quality_key`, `edition_label`.
 - `decide_category(text, title, author, fb2_genres, subjects)` — точка входа классификации (`genres.fb2_decision` без LLM, иначе `classify_category` с `hints`), добавляет `source`.
 - `classify_category(text, title, author)` → `{category, confidence, review_reason, evidence}`; факты включают `pub_year/publisher/edition`; низкая уверенность → `DEFAULT_CATEGORY`.
 - `build_category_path(category, author, series)` — для `Художественные | Жанр` добавляет `author-slug | series-slug`.

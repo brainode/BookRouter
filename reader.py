@@ -218,6 +218,40 @@ def extract_book(path, head_pages=MAX_PAGES, tail_pages=MAX_TAIL_PAGES) -> Extra
     )
 
 
+def probe_book(path, pages: int = 3) -> ExtractedText:
+    """Дешёвая проверка без OCR: формат, число страниц, есть ли текстовый слой, встроенные метаданные."""
+    fmt = detect_format(path)
+    page_count, ocr_used, embedded = 0, False, {}
+    if fmt == "pdf":
+        with pymupdf.open(long_path(path), filetype="pdf") as doc:
+            if doc.needs_pass:
+                raise ExtractError("pdf_encrypted")
+            page_count = len(doc)
+            text = "\n".join(doc[i].get_text() for i in range(min(pages, page_count)))
+        ocr_used = needs_ocr(text)
+    elif fmt == "djvu":
+        timeout_sec = max(1, int(DDJVU_PAGE_TIMEOUT_SEC))
+        safe_path, temp_dir = prepare_book_path(path)
+        try:
+            raw = _run_tool(["djvused", "-e", "n", safe_path], timeout_sec).decode("ascii", errors="replace").strip()
+            if not raw.isdigit():
+                raise ExtractError(f"djvused_bad_page_count:{raw[:40]!r}")
+            page_count = int(raw)
+            text = "\n".join(
+                _run_tool(["djvutxt", f"--page={p + 1}", safe_path], timeout_sec).decode("utf-8", errors="replace")
+                for p in range(min(pages, page_count))
+            )
+            ocr_used = needs_ocr(text)
+        finally:
+            if temp_dir:
+                temp_dir.cleanup()
+    elif fmt == "epub":
+        embedded = _epub_metadata(path)
+    else:
+        embedded = _fb2_metadata(_read_fb2_bytes(path))
+    return ExtractedText("", "", fmt, page_count, ocr_used, embedded)
+
+
 def extract_text_with_ends(path, head_pages=MAX_PAGES, tail_pages=MAX_TAIL_PAGES):
     """Возвращает (head, tail); см. extract_book."""
     result = extract_book(path, head_pages, tail_pages)

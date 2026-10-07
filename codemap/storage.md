@@ -41,6 +41,8 @@
 ## `review_books.py`
 `resolve_book(db, id, category, output, title, author, series)` — переносит книгу из `Требует внимания` в выбранную категорию, ставит `status='ok'`, `metadata_source='manual'`. CLI: список очереди или `--resolve ID --category …`.
 
+Колонки `books.work_key` (индекс), `books.same_as_id`; таблица `work_reviews(work_key PK, decision, decided_at)`.
+
 ## `library_ops.py`
 `plan_book_step`, `apply_steps`, `record_action`, `run_action`, `undo_action`, `trash_book`, `prune_missing`, `LibraryOpError`, `TRASH_FOLDER`, `DUPLICATES_FOLDER`. Единственное место, где книги перемещаются после копирования; шаги `book`/`row` пишутся в `actions_log`.
 
@@ -51,7 +53,7 @@ CLI: `actions [--limit]`, `undo ACTION_ID`, `prune-missing [--apply]` (функ�
 - `editions.py` (T50) — `work_key`, `edition_relation`, `quality_key`, `edition_label`.
 
 ## `authors.py` (T48)
-Таблицы `authors(id,name,slug,genre,created_at)`, `author_aliases(alias_key PK,author_id,initial_key,name)`, колонка `books.author_id`. Функции: `name_parts`, `alias_key`, `initial_key`, `phonetic_key`, `get_author`, `create_author`, `add_alias`, `find_author`, `resolve_author`, `suggest_merges`. Слияние — `library_ops.merge_authors(db, target, sources, output)`. CLI `library.py`: `backfill-authors [--apply]`, `suggest-authors [--limit]`, `merge-authors TARGET SOURCE… [--apply]`, `backfill-genres [--apply]`, `rebuild-fiction [--apply] [--author ID]`, `set-author-genre AUTHOR_ID GENRE [--apply]`. Колонка `books.book_genre` (жанр самой книги; путь худлита использует `authors.genre`). `authors.fiction_genre`, `genre_for_new_book`, `majority_genre`; `library_ops.set_author_genre(db, author_id, genre, output)`.
+Таблицы `authors(id,name,slug,genre,created_at)`, `author_aliases(alias_key PK,author_id,initial_key,name)`, колонка `books.author_id`. Функции: `name_parts`, `alias_key`, `initial_key`, `phonetic_key`, `get_author`, `create_author`, `add_alias`, `find_author`, `resolve_author`, `suggest_merges`. Слияние — `library_ops.merge_authors(db, target, sources, output)`. CLI `library.py`: `backfill-authors [--apply]`, `suggest-authors [--limit]`, `merge-authors TARGET SOURCE… [--apply]`, `backfill-genres [--apply]`, `rebuild-fiction [--apply] [--author ID]`, `set-author-genre AUTHOR_ID GENRE [--apply]`, `backfill-quality [--apply] [--limit N]`, `backfill-works [--apply]`, `dedupe-editions [--apply]`. `library_ops.resolve_same_edition(db, keep_id, other_ids, output)` — худшие в `_Дубли`, одно действие журнала. Колонка `books.book_genre` (жанр самой книги; путь худлита использует `authors.genre`). `authors.fiction_genre`, `genre_for_new_book`, `majority_genre`; `library_ops.set_author_genre(db, author_id, genre, output)`.
 
 ## Папки в OUTPUT
 `<категория>/…` — книги; `Errors/{file,zip}/…` — ошибки; `Требует внимания/` — очередь проверки; `_Дубли/` (T50) — худшие экземпляры того же издания; `_Корзина/` (T48) — «удалённые» вручную.

@@ -230,3 +230,80 @@ def test_first_book_sets_author_genre(main, tmp_path, monkeypatch):
 def test_first_book_dry_run_keeps_genre_null(main, tmp_path, monkeypatch):
     db, author, _ = _genre_run(main, tmp_path, monkeypatch, None, dry_run=True)
     assert db.conn.execute("SELECT genre FROM authors WHERE id=?", (author["id"],)).fetchone()[0] is None
+
+
+class _IsbnEnricher:
+    def enrich(self, facts):
+        return {"title": facts["title"], "author": facts["author"], "isbn": facts.get("isbn", ""), "series": ""}
+
+
+def _edition_setup(main, tmp_path, monkeypatch, old, new_facts, new_quality_fmt_ocr):
+    from authors import add_alias, create_author
+    from db import BookDB
+    from editions import work_key
+
+    db = BookDB(str(tmp_path / "t.db"))
+    author = create_author(db, "Адитья Бхаргава", slug="aditya-bhargava")
+    add_alias(db, author["id"], "Адитья Бхаргава")
+    out = tmp_path / "out" / "Наука" / "Алгоритмы"
+    out.mkdir(parents=True)
+    old_file = out / "old.pdf"
+    old_file.write_bytes(b"%PDF-old")
+    old_id = db.upsert_book(
+        time_added="t", original_filename="old.pdf", original_path="old", isbn="", preview_text="",
+        title="Грокаем алгоритмы", author="Адитья Бхаргава", category="Наука | Алгоритмы",
+        new_path=str(old_file), origin_type="file", origin_path="old", status="ok",
+        author_id=author["id"], work_key=work_key(author["id"], "Адитья Бхаргава", "Грокаем алгоритмы"),
+        **old)
+    facts = {"title": "Грокаем алгоритмы", "author": "Адитья Бхаргава", "confidence": 0.9, **new_facts}
+    monkeypatch.setattr(main, "extract_book_facts", lambda *a, **k: dict(facts))
+    fmt, ocr = new_quality_fmt_ocr
+    source = _source(tmp_path, "new.pdf")
+    extracted = {"status": "ok", "index": 1, "source": source, "isbn": "", "text": "text", "error": "",
+                 "content_hash": "h", "fmt": fmt, "ocr_used": ocr, "page_count": 10}
+    return db, old_id, extracted
+
+
+def test_same_edition_worse_copy_not_copied(main, tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("classification must be skipped")
+
+    monkeypatch.setattr(main, "decide_category", boom)
+    db, old_id, extracted = _edition_setup(
+        main, tmp_path, monkeypatch, {"isbn_norm": "9785496025577", "quality": 300},
+        {"isbn": "9785496025577"}, ("pdf", True))
+    result = main.process_file(extracted, _IsbnEnricher(), _options(main, tmp_path), db=db)
+    assert result["status"] == "same_edition"
+    assert result["same_as_id"] == old_id
+    assert sorted(p.name for p in (tmp_path / "out" / "Наука" / "Алгоритмы").iterdir()) == ["old.pdf"]
+
+
+def test_same_edition_better_copy_replaces(main, tmp_path, monkeypatch):
+    from library_ops import resolve_same_edition
+
+    monkeypatch.setattr(main, "decide_category", lambda *a, **k: (_ for _ in ()).throw(AssertionError()))
+    db, old_id, extracted = _edition_setup(
+        main, tmp_path, monkeypatch, {"isbn_norm": "9785496025577", "quality": 100},
+        {"isbn": "9785496025577"}, ("pdf", False))
+    result = main.process_file(extracted, _IsbnEnricher(), _options(main, tmp_path), db=db)
+    assert result["status"] == "ok"
+    assert result["displace_ids"] == [old_id]
+    assert result["category"] == "Наука | Алгоритмы"
+    assert Path(result["new_path"]).parent == tmp_path / "out" / "Наука" / "Алгоритмы"
+    new_id = main._store_result(db, result, _options(main, tmp_path))
+    resolve_same_edition(db, new_id, [old_id], str(tmp_path / "out"))
+    old = db.conn.execute("SELECT * FROM books WHERE id = ?", (old_id,)).fetchone()
+    assert old["status"] == "same_edition" and old["same_as_id"] == new_id
+    assert "_Дубли" in old["new_path"] and Path(old["new_path"]).exists()
+
+
+def test_new_edition_kept_with_label(main, tmp_path, monkeypatch):
+    monkeypatch.setattr(main, "decide_category", lambda *a, **k: (_ for _ in ()).throw(AssertionError()))
+    db, old_id, extracted = _edition_setup(
+        main, tmp_path, monkeypatch, {"edition": "", "pub_year": "2017", "quality": 300},
+        {"edition": "2", "pub_year": "2024"}, ("pdf", False))
+    result = main.process_file(extracted, _IsbnEnricher(), _options(main, tmp_path), db=db)
+    assert result["status"] == "ok"
+    assert result["category"] == "Наука | Алгоритмы"
+    assert "(2-е изд., 2024)" in Path(result["new_path"]).name
+    assert Path(result["new_path"]).exists()
