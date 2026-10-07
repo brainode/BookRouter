@@ -7,3 +7,8 @@ __pycache__/
 .env
 !.env.example
 TASKS.md
+tasks/
+logs/
+uploads/
+settings.override.env
+prompts/*.bak

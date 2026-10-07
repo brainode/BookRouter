@@ -22,7 +22,14 @@ There is no linter config or build step. External runtime dependencies: a runnin
 
 `books.db`, `results.csv` and `app.log` are created in the CWD. To try changes on real books without touching the user's DB, run from a scratch dir: `cd <scratch> && python <repo>/__main__.py --input <in> --output <out> --dry-run --limit N`. `__main__.py` can't be imported as a module by name — tests load it via `importlib.util.spec_from_file_location` (see `tests/test_pipeline.py`).
 
-`TASKS.md` (gitignored, may be absent) is a local log of diagnosed problems, fixes and known limitations.
+`TASKS.md` (gitignored, may be absent) is the ordered task list; each task has a full spec in `tasks/T<id>-*.md` (also gitignored) and history lives in `tasks/ARCHIVE.md`.
+
+## Navigation and agents
+
+- Start with `codemap.md` (and the relevant `codemap/*.md`) instead of reading whole files; keep it updated when a task adds or moves symbols.
+- Agents in `.claude/agents/`: `coder` (Sonnet, low effort — implements one spec), `scout` (Haiku — finds anchors via the codemap), `reviewer` (checks a finished task against its spec). Skill `task-runner` runs the next task through coder → reviewer.
+- Skills: `pipeline-dev` (pipeline, DB, prompts, library file ops) and `webui-dev` (FastAPI + Jinja2 + Bootstrap 5 + htmx UI in `webui/`).
+- Agents work in the main checkout: `TASKS.md` and `tasks/` are gitignored and would be missing in a worktree.
 
 ## Configuration
 
