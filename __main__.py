@@ -137,6 +137,11 @@ def _error_result(source: BookSource, index: int, status: str, reason: str, text
         "status": status,
         "error_reason": reason,
         "content_hash": "",
+        "category_evidence": "",
+        "category_source": "",
+        "pub_year": "",
+        "publisher": "",
+        "edition": "",
     }
 
 
@@ -221,6 +226,9 @@ def _facts_from_filename(source: BookSource) -> dict | None:
         "confidence": 0.3,
         "language_hint": "",
         "series_hint": hints.get("series", ""),
+        "pub_year": "",
+        "publisher": "",
+        "edition": "",
     }
 
 
@@ -316,6 +324,11 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "status": "needs_review" if category_base == DEFAULT_CATEGORY else "ok",
             "error_reason": category_data.get("review_reason", "") if category_base == DEFAULT_CATEGORY else "",
             "content_hash": content_hash,
+            "category_evidence": category_data.get("evidence", ""),
+            "category_source": "llm",
+            "pub_year": facts.get("pub_year", ""),
+            "publisher": facts.get("publisher", ""),
+            "edition": facts.get("edition", ""),
         }
 
         io_path = source.materialized_path or source.logical_path
@@ -442,6 +455,11 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         error_reason=result["error_reason"],
         new_path=str(result["new_path"]).replace("/", "\\"),
         content_hash=result.get("content_hash") or None,
+        category_evidence=result.get("category_evidence"),
+        category_source=result.get("category_source"),
+        pub_year=result.get("pub_year"),
+        publisher=result.get("publisher"),
+        edition=result.get("edition"),
     )
     if result["status"] in ("ok", "duplicate", "needs_review") and previous:
         old_path = previous.get("new_path") or ""

@@ -13,15 +13,15 @@ import llm
     ],
 )
 def test_uncertain_category_has_neutral_fallback(monkeypatch, response):
-    monkeypatch.setattr(llm, "_chat_json", lambda *args: response)
+    monkeypatch.setattr(llm, "_chat_json", lambda *args, **kwargs: response)
     assert llm.classify_category("text", "Title", "Author") == {
-        "category": "Требует внимания", "confidence": 0.0,
+        "category": "Требует внимания", "confidence": 0.0, "evidence": "",
         "review_reason": "invalid_category_response" if response.get("category") != "Требует внимания" else "insufficient_category_evidence",
     }
 
 
 def test_classifier_receives_subject_rules_and_normalizes_case(monkeypatch):
-    def chat(system, prompt, schema):
+    def chat(system, prompt, schema, temperature=None):
         assert "Cheatsheets and reference guides belong to their subject" in system
         assert "Fiction genres:" in system
         assert "mathematical foundations" in system
@@ -31,7 +31,7 @@ def test_classifier_receives_subject_rules_and_normalizes_case(monkeypatch):
 
     monkeypatch.setattr(llm, "_chat_json", chat)
     assert llm.classify_category("text", "Python reference", "Author") == {
-        "category": "IT | Языки программирования | Python", "confidence": 0.8, "review_reason": ""
+        "category": "IT | Языки программирования | Python", "confidence": 0.8, "review_reason": "", "evidence": ""
     }
 
 
@@ -50,7 +50,7 @@ def test_renamed_fiction_genre_keeps_author_and_series():
 
 
 def test_low_confidence_category_goes_to_review(monkeypatch):
-    monkeypatch.setattr(llm, "_chat_json", lambda *args: {"category": "IT | Data Science", "confidence": 0.2})
+    monkeypatch.setattr(llm, "_chat_json", lambda *args, **kwargs: {"category": "IT | Data Science", "confidence": 0.2})
     result = llm.classify_category("text", "Title", "Author")
     assert result["category"] == "Требует внимания"
     assert "suggested=IT | Data Science" in result["review_reason"]
@@ -65,7 +65,7 @@ def test_prompt_files_loaded():
 def test_classify_prompt_contains_rules(monkeypatch):
     seen = {}
 
-    def fake(system_prompt, user_prompt, schema):
+    def fake(system_prompt, user_prompt, schema, temperature=None):
         seen["system"] = system_prompt
         seen["user"] = user_prompt
         return {"category": "IT | AI и ML", "confidence": 0.9}
@@ -91,3 +91,25 @@ def test_new_categories_allowed():
     ]:
         assert c in llm.ALLOWED_CATEGORIES
     assert "Science fiction is not fantasy" in llm.CATEGORY_RULES
+
+
+def test_classify_returns_evidence_and_uses_classify_temperature(monkeypatch):
+    seen = {}
+
+    def chat(system, prompt, schema, temperature=None):
+        seen["temperature"] = temperature
+        return {"evidence": "про Python", "category": "IT | Языки программирования | Python", "confidence": 0.9}
+
+    monkeypatch.setattr(llm, "_chat_json", chat)
+    result = llm.classify_category("text", "T", "A")
+    assert result["evidence"] == "про Python"
+    assert seen["temperature"] == config.LLM_CLASSIFY_TEMPERATURE
+
+
+def test_facts_edition_fields_validated(monkeypatch):
+    data = {"title": "T", "author": "A", "pub_year": "1999г", "edition": "2", "publisher": "  Питер "}
+    monkeypatch.setattr(llm, "_chat_json", lambda *a, **k: dict(data))
+    facts = llm.extract_book_facts("text", "f.pdf")
+    assert (facts["pub_year"], facts["edition"], facts["publisher"]) == ("", "2", "Питер")
+    data["edition"] = "1"
+    assert llm.extract_book_facts("text", "f.pdf")["edition"] == ""

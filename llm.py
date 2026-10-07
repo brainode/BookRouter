@@ -18,6 +18,7 @@ from config import (
     FACTS_SYSTEM_PROMPT,
     FACTS_USER_PROMPT,
     CATEGORY_MIN_CONFIDENCE,
+    LLM_CLASSIFY_TEMPERATURE,
     LLM_KEEP_ALIVE,
     LLM_NUM_CTX,
     LLM_NUM_PREDICT,
@@ -26,6 +27,7 @@ from config import (
     LLM_THINK,
     LLM_TIMEOUT_SEC,
     MODEL_NAME,
+    OLLAMA_HOST,
 )
 from normalization import (
     canonical_author_name,
@@ -39,7 +41,7 @@ from normalization import (
 logger = logging.getLogger("bookrouter")
 last_request_time = 0.0
 # Без таймаута зависший сервер Ollama подвешивает весь прогон
-_client = Client(timeout=LLM_TIMEOUT_SEC)
+_client = Client(host=OLLAMA_HOST or None, timeout=LLM_TIMEOUT_SEC)
 
 
 def _parse_categories(raw_tree: str) -> list[str]:
@@ -66,18 +68,22 @@ FACTS_SCHEMA: dict[str, Any] = {
         "isbn": {"type": "string"},
         "confidence": {"type": "number"},
         "language_hint": {"type": "string"},
+        "pub_year": {"type": "string"},
+        "publisher": {"type": "string"},
+        "edition": {"type": "string"},
     },
-    "required": ["title", "author", "isbn", "confidence", "language_hint"],
+    "required": ["title", "author", "isbn", "confidence", "language_hint", "pub_year", "publisher", "edition"],
     "additionalProperties": False,
 }
 
 CATEGORY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
+        "evidence": {"type": "string"},
         "category": {"type": "string", "enum": ALLOWED_CATEGORIES or [DEFAULT_CATEGORY]},
         "confidence": {"type": "number"},
     },
-    "required": ["category", "confidence"],
+    "required": ["evidence", "category", "confidence"],
     "additionalProperties": False,
 }
 
@@ -146,7 +152,12 @@ def warm_up_model() -> float:
     return time.time() - start
 
 
-def _chat_json(system_prompt: str, user_prompt: str, schema: dict[str, Any] | None) -> dict[str, Any]:
+def _chat_json(
+    system_prompt: str,
+    user_prompt: str,
+    schema: dict[str, Any] | None,
+    temperature: float | None = None,
+) -> dict[str, Any]:
     global last_request_time
 
     if LLM_REQUEST_DELAY_SEC > 0:
@@ -155,7 +166,7 @@ def _chat_json(system_prompt: str, user_prompt: str, schema: dict[str, Any] | No
             time.sleep(LLM_REQUEST_DELAY_SEC - elapsed)
 
     options = {
-        "temperature": LLM_TEMPERATURE,
+        "temperature": LLM_TEMPERATURE if temperature is None else temperature,
         "num_ctx": LLM_NUM_CTX,
         "num_predict": LLM_NUM_PREDICT,
     }
@@ -219,6 +230,9 @@ def extract_book_facts(text: str, filename: str = "", interrupted_flag: bool | N
             "confidence": 0.0,
             "language_hint": "",
             "series_hint": "",
+            "pub_year": "",
+            "publisher": "",
+            "edition": "",
         }
 
     file_hints = parse_filename_hints(filename)
@@ -234,6 +248,14 @@ def extract_book_facts(text: str, filename: str = "", interrupted_flag: bool | N
     isbn = normalize_spaces(str(model_data.get("isbn", "")))
     confidence = _normalize_confidence(model_data.get("confidence"), default=0.45)
     language_hint = normalize_spaces(str(model_data.get("language_hint", "")))
+
+    pub_year = normalize_spaces(str(model_data.get("pub_year", "")))
+    if not re.fullmatch(r"(1[5-9]|20)\d{2}", pub_year):
+        pub_year = ""
+    publisher = normalize_spaces(str(model_data.get("publisher", "")))[:100]
+    edition = normalize_spaces(str(model_data.get("edition", "")))
+    if not re.fullmatch(r"\d{1,2}", edition) or edition == "1":
+        edition = ""
 
     if not title or is_unknown_label(title):
         title = file_hints["title"]
@@ -253,17 +275,21 @@ def extract_book_facts(text: str, filename: str = "", interrupted_flag: bool | N
         "confidence": confidence,
         "language_hint": language_hint,
         "series_hint": file_hints.get("series", ""),
+        "pub_year": pub_year,
+        "publisher": publisher,
+        "edition": edition,
     }
 
 
 def classify_category(text: str, title: str, author: str, interrupted_flag: bool | None = None) -> dict[str, Any]:
     if interrupted_flag:
-        return {"category": DEFAULT_CATEGORY, "confidence": 0.0}
+        return {"category": DEFAULT_CATEGORY, "confidence": 0.0, "evidence": "", "review_reason": ""}
 
     categories_text = "\n".join(f"- {category}" for category in ALLOWED_CATEGORIES)
     prompt = CLASSIFY_USER_PROMPT.format(title=title, author=author, excerpt=text[:9000])
     system_prompt = CLASSIFY_SYSTEM_PROMPT.format(rules=CATEGORY_RULES, categories=categories_text)
-    model_data = _chat_json(system_prompt, prompt, CATEGORY_SCHEMA)
+    model_data = _chat_json(system_prompt, prompt, CATEGORY_SCHEMA, temperature=LLM_CLASSIFY_TEMPERATURE)
+    evidence = normalize_spaces(str(model_data.get("evidence", "")))[:300]
     category = normalize_spaces(str(model_data.get("category", "")))
     confidence = _normalize_confidence(model_data.get("confidence"), default=0.5)
     review_reason = ""
@@ -287,7 +313,7 @@ def classify_category(text: str, title: str, author: str, interrupted_flag: bool
         review_reason = f"low_category_confidence:{confidence:.2f}; suggested={category}"
         category = DEFAULT_CATEGORY
 
-    return {"category": category, "confidence": confidence, "review_reason": review_reason}
+    return {"category": category, "confidence": confidence, "review_reason": review_reason, "evidence": evidence}
 
 
 def build_category_path(category: str, author: str, series: str) -> str:

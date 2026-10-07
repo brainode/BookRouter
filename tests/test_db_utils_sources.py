@@ -114,6 +114,22 @@ def test_migration_adds_columns_to_old_schema(tmp_path):
     assert {"status", "content_hash", "origin_path"} <= columns
 
 
+def test_migration_adds_t42_columns(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old42.db"
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE books (id INTEGER PRIMARY KEY AUTOINCREMENT, time_added TEXT NOT NULL, "
+                 "original_filename TEXT NOT NULL, original_path TEXT NOT NULL, isbn TEXT, preview_text TEXT, "
+                 "title TEXT, author TEXT, category TEXT, new_path TEXT)")
+    conn.commit()
+    conn.close()
+    database = BookDB(str(path))
+    columns = {row["name"] for row in database.conn.execute("PRAGMA table_info(books)")}
+    database.close()
+    assert {"category_evidence", "category_source", "pub_year", "publisher", "edition"} <= columns
+
+
 @pytest.mark.parametrize(
     "name, expected",
     [

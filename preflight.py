@@ -5,10 +5,10 @@ import os
 import shutil
 import tempfile
 
-import ollama
+from ollama import Client
 import pytesseract
 
-from config import LANGUAGES, MODEL_NAME, OCR_ENABLED
+from config import LANGUAGES, MODEL_NAME, OCR_ENABLED, OLLAMA_HOST
 from reader import TESSERACT_PATH
 
 DJVU_TOOLS = ("djvused", "djvutxt", "ddjvu")
@@ -71,7 +71,7 @@ def _model_names(response) -> set[str]:
 
 def check_ollama() -> list[str]:
     try:
-        names = _model_names(ollama.list())
+        names = _model_names(Client(host=OLLAMA_HOST or None).list())
     except Exception as exc:
         return [f"Ollama недоступна: {exc}. Запусти Ollama и повтори"]
     wanted = MODEL_NAME if ":" in MODEL_NAME else f"{MODEL_NAME}:latest"

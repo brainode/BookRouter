@@ -39,7 +39,7 @@
 - `_parse_categories` → `ALLOWED_CATEGORIES`; `DEFAULT_CATEGORY = "Требует внимания"`; `CATEGORY_RULES`; `FACTS_SCHEMA`, `CATEGORY_SCHEMA`.
 - `_chat_raw` — единственный вызов Ollama (лестница параметров, `LLMUnavailableError`). `_chat_json` — опции + разбор JSON. `warm_up_model`.
 - `extract_book_facts(text, filename)` → `{title, author, isbn, confidence, language_hint, series_hint}`.
-- `classify_category(text, title, author)` → `{category, confidence, review_reason}`; низкая уверенность → `DEFAULT_CATEGORY`.
+- `classify_category(text, title, author)` → `{category, confidence, review_reason, evidence}`; факты включают `pub_year/publisher/edition`; низкая уверенность → `DEFAULT_CATEGORY`.
 - `build_category_path(category, author, series)` — для `Художественные | Жанр` добавляет `author-slug | series-slug`.
 
 ## `normalization.py`
