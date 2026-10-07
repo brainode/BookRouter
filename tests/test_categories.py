@@ -23,7 +23,7 @@ def test_uncertain_category_has_neutral_fallback(monkeypatch, response):
 def test_classifier_receives_subject_rules_and_normalizes_case(monkeypatch):
     def chat(system, prompt, schema):
         assert "Cheatsheets and reference guides belong to their subject" in system
-        assert "Fiction priorities:" in system
+        assert "Fiction genres:" in system
         assert "mathematical foundations" in system
         assert "Требует внимания" in schema["properties"]["category"]["enum"]
         assert "Title: Python reference" in prompt
@@ -75,3 +75,19 @@ def test_classify_prompt_contains_rules(monkeypatch):
     assert llm.CATEGORY_RULES.splitlines()[0] in seen["system"]
     assert "- IT | AI и ML" in seen["system"]
     assert "Title: T" in seen["user"]
+
+
+def test_new_categories_allowed():
+    for c in [
+        "Публицистика",
+        "Биографии и мемуары",
+        "Наука | Математика | Алгебра",
+        "Наука | Математика | Дискретная математика",
+        "Наука | Математика | Общая и популярная",
+        "Наука | Химия",
+        "Наука | Биология и медицина",
+        "Наука | Общественные науки",
+        "Наука | Техника и инженерия",
+    ]:
+        assert c in llm.ALLOWED_CATEGORIES
+    assert "Science fiction is not fantasy" in llm.CATEGORY_RULES
