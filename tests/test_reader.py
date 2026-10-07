@@ -137,3 +137,55 @@ def test_ocr_timeout_on_all_pages_fails_book():
 
     with pytest.raises(reader.OCRTimeoutError):
         reader._ocr_pages([0, 1], "head", ocr_page)
+
+
+def test_fb2_metadata_from_description(tmp_path):
+    path = tmp_path / "b.fb2"
+    path.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><FictionBook><description><title-info>'
+        "<genre>sf_horror</genre><genre>sf</genre><author><first-name>Стивен</first-name>"
+        "<last-name>Кинг</last-name></author><book-title>Оно</book-title></title-info>"
+        "<publish-info><publisher>АСТ</publisher><year>2015 г.</year><isbn>978-5-17-089524-8</isbn>"
+        "</publish-info></description><body><section><p>текст книги</p></section></body></FictionBook>",
+        encoding="utf-8",
+    )
+    result = reader.extract_book(str(path))
+    assert result.fmt == "fb2"
+    assert result.embedded["genres"] == ["sf_horror", "sf"]
+    assert result.embedded["author"] == "Стивен Кинг"
+    assert result.embedded["year"] == "2015"
+    assert result.embedded["publisher"] == "АСТ"
+    assert result.embedded["title"] == "Оно"
+
+
+def test_epub_metadata_from_opf(tmp_path):
+    path = tmp_path / "b.epub"
+    container = (
+        '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+        '<rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>'
+        "</rootfiles></container>"
+    )
+    opf = (
+        '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Книга</dc:title>'
+        "<dc:creator>Автор</dc:creator><dc:date>2019-05-01</dc:date><dc:publisher>Изд</dc:publisher>"
+        "<dc:subject>Фантастика</dc:subject><dc:subject>Ужасы</dc:subject>"
+        "<dc:identifier>urn:isbn:978-5-17-089524-3</dc:identifier></metadata>"
+        '<manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>'
+        '<spine><itemref idref="c1"/></spine></package>'
+    )
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("META-INF/container.xml", container)
+        z.writestr("content.opf", opf)
+        z.writestr("c1.xhtml", "<html><body><p>hello world</p></body></html>")
+    emb = reader.extract_book(str(path)).embedded
+    assert emb["year"] == "2019"
+    assert emb["subjects"] == ["Фантастика", "Ужасы"]
+    assert emb["isbn"] == "9785170895243"
+    assert emb["publisher"] == "Изд"
+
+
+def test_quality_score_order():
+    q = reader.quality_score
+    assert q("pdf", False) > q("djvu", False) > q("pdf", True)
+    assert q("epub", False) == 300

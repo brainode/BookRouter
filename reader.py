@@ -10,6 +10,7 @@ import subprocess
 import warnings
 import xml.etree.ElementTree as ET
 import zipfile
+from dataclasses import dataclass, field
 from tempfile import TemporaryDirectory
 from urllib.parse import unquote
 
@@ -30,7 +31,7 @@ from config import (
     WORDS_PER_PAGES,
 )
 from interrupt import Interrupted, check_interrupted, stop_event
-from normalization import extract_first_valid_isbn
+from normalization import extract_first_valid_isbn, normalize_isbn
 from utils import long_path
 
 
@@ -64,6 +65,26 @@ class OCRConfigError(RuntimeError):
 
 class ExtractError(RuntimeError):
     """Книгу не удалось прочитать; сообщение идёт в error_reason."""
+
+
+@dataclass
+class ExtractedText:
+    head: str
+    tail: str
+    fmt: str
+    page_count: int = 0          # страницы PDF/DjVu; для EPUB/FB2 — 0
+    ocr_used: bool = False       # начало книги распознавалось OCR — текстового слоя нет
+    embedded: dict = field(default_factory=dict)  # title, author, year, publisher, isbn, genres, subjects
+
+
+QUALITY_BY_KIND = {"pdf": 300, "epub": 300, "fb2": 250, "djvu": 200, "ocr": 100}
+
+
+def quality_score(fmt: str, ocr_used: bool) -> int:
+    """Чем больше, тем лучше экземпляр: родной текст лучше скана с текстовым слоем, тот — лучше OCR."""
+    if ocr_used and fmt in ("pdf", "djvu"):
+        return QUALITY_BY_KIND["ocr"]
+    return QUALITY_BY_KIND.get(fmt, 0)
 
 
 def _is_timeout_message(message) -> bool:
@@ -165,22 +186,30 @@ def detect_format(path) -> str:
     raise ExtractError(f"unknown_format:{header[:8]!r}")
 
 
-def extract_text_with_ends(path, head_pages=MAX_PAGES, tail_pages=MAX_TAIL_PAGES):
+def extract_book(path, head_pages=MAX_PAGES, tail_pages=MAX_TAIL_PAGES) -> ExtractedText:
     """
     Извлекает текст из первых head_pages и последних tail_pages страниц.
     Для fb2/epub страницы считаются как блоки по WORDS_PER_PAGES слов.
-    Возвращает (head, tail).
     """
     print(f"📄 Извлечение текста из: {os.path.basename(path)}")
 
     fmt = detect_format(path)
-    if fmt == "pdf":
-        return extract_text_pdf(path, head_pages, tail_pages)
-    if fmt == "djvu":
-        return extract_text_djvu(path, head_pages, tail_pages)
-    if fmt == "epub":
-        return extract_text_epub(path, head_pages, tail_pages)
-    return extract_text_fb2(path, head_pages, tail_pages)
+    stats: dict = {}
+    func = {
+        "pdf": extract_text_pdf,
+        "djvu": extract_text_djvu,
+        "epub": extract_text_epub,
+    }.get(fmt, extract_text_fb2)
+    head, tail = func(path, head_pages, tail_pages, stats=stats)
+    return ExtractedText(
+        head, tail, fmt, stats.get("page_count", 0), stats.get("ocr_used", False), stats.get("embedded", {})
+    )
+
+
+def extract_text_with_ends(path, head_pages=MAX_PAGES, tail_pages=MAX_TAIL_PAGES):
+    """Возвращает (head, tail); см. extract_book."""
+    result = extract_book(path, head_pages, tail_pages)
+    return result.head, result.tail
 
 
 def _tail_ocr_needed(head_text: str) -> bool:
@@ -204,22 +233,26 @@ def _ocr_pages(pages: list[int], label: str, ocr_page) -> str:
     return "\n".join(parts).strip()
 
 
-def _pdf_pages_text(doc, pages: list[int], label: str, allow_ocr: bool = True) -> str:
+def _pdf_pages_text(doc, pages: list[int], label: str, allow_ocr: bool = True, stats: dict | None = None) -> str:
     text = "\n".join(doc[page_number].get_text() for page_number in pages)
     if OCR_ENABLED and allow_ocr and pages and needs_ocr(text):
+        if stats is not None and label == "head":
+            stats["ocr_used"] = True
         print(f"🔍 Применяю OCR для PDF ({label})")
         return _ocr_pages(pages, label, lambda page_number: perform_ocr_on_page(doc[page_number]))
     return text.strip()
 
 
-def extract_text_pdf(path, head_pages, tail_pages):
+def extract_text_pdf(path, head_pages, tail_pages, stats=None):
     """Извлекает текст из PDF с поддержкой OCR"""
     # filetype явно: PyMuPDF иначе выбирает тип по расширению (а бывают PDF с расширением .epub)
     with pymupdf.open(long_path(path), filetype="pdf") as doc:
         if doc.needs_pass:
             raise ExtractError("pdf_encrypted")
+        if stats is not None:
+            stats["page_count"] = len(doc)
         head, tail = _head_tail_ranges(len(doc), head_pages, tail_pages)
-        head_text = _pdf_pages_text(doc, head, "head")
+        head_text = _pdf_pages_text(doc, head, "head", stats=stats)
         return head_text, _pdf_pages_text(doc, tail, "tail", allow_ocr=_tail_ocr_needed(head_text))
 
 
@@ -245,7 +278,8 @@ def _run_tool(args: list[str], timeout_sec: int) -> bytes:
 
 
 def _djvu_pages_text(
-    safe_path: str, pages: list[int], label: str, tmpdir: str, timeout_sec: int, allow_ocr: bool = True
+    safe_path: str, pages: list[int], label: str, tmpdir: str, timeout_sec: int, allow_ocr: bool = True,
+    stats: dict | None = None,
 ) -> str:
     # Сначала текстовый слой: многие djvu уже распознаны, OCR тогда не нужен.
     layer = [
@@ -267,11 +301,13 @@ def _djvu_pages_text(
         finally:
             os.remove(out_file)
 
+    if stats is not None and label == "head":
+        stats["ocr_used"] = True
     print(f"🔍 Применяю OCR для DJVU ({label})")
     return _ocr_pages(pages, label, ocr_page)
 
 
-def extract_text_djvu(path, head_pages, tail_pages):
+def extract_text_djvu(path, head_pages, tail_pages, stats=None):
     """Извлекает текст из DJVU: текстовый слой через djvutxt, иначе OCR страниц, отрендеренных ddjvu"""
     timeout_sec = max(1, int(DDJVU_PAGE_TIMEOUT_SEC))
     safe_path, temp_dir = prepare_book_path(path)
@@ -279,9 +315,11 @@ def extract_text_djvu(path, head_pages, tail_pages):
         raw_count = _run_tool(["djvused", "-e", "n", safe_path], timeout_sec).decode("ascii", errors="replace").strip()
         if not raw_count.isdigit():
             raise ExtractError(f"djvused_bad_page_count:{raw_count[:40]!r}")
+        if stats is not None:
+            stats["page_count"] = int(raw_count)
         head, tail = _head_tail_ranges(int(raw_count), head_pages, tail_pages)
         with TemporaryDirectory() as tmpdir:
-            head_text = _djvu_pages_text(safe_path, head, "head", tmpdir, timeout_sec)
+            head_text = _djvu_pages_text(safe_path, head, "head", tmpdir, timeout_sec, stats=stats)
             tail_text = _djvu_pages_text(
                 safe_path, tail, "tail", tmpdir, timeout_sec, allow_ocr=_tail_ocr_needed(head_text)
             )
@@ -301,7 +339,7 @@ def _split_head_tail_words(words: list[str], head_pages: int, tail_pages: int) -
     return " ".join(head), " ".join(words[tail_start:])
 
 
-def _epub_spine_paths(archive: zipfile.ZipFile) -> list[str]:
+def _epub_opf_path(archive: zipfile.ZipFile) -> str:
     names = archive.namelist()
     opf_path = ""
     if "META-INF/container.xml" in names:
@@ -312,6 +350,12 @@ def _epub_spine_paths(archive: zipfile.ZipFile) -> list[str]:
                 break
     if not opf_path:
         opf_path = next((name for name in names if name.lower().endswith(".opf")), "")
+    return opf_path
+
+
+def _epub_spine_paths(archive: zipfile.ZipFile) -> list[str]:
+    names = archive.namelist()
+    opf_path = _epub_opf_path(archive)
 
     spine: list[str] = []
     if opf_path in names:
@@ -351,7 +395,40 @@ def _pymupdf_text(path, head_pages, tail_pages) -> tuple[str, str]:
         )
 
 
-def extract_text_epub(path, head_pages, tail_pages):
+def _epub_metadata(path) -> dict:
+    try:
+        with zipfile.ZipFile(long_path(path)) as archive:
+            opf_path = _epub_opf_path(archive)
+            opf = ET.fromstring(archive.read(opf_path))
+        meta = {"title": "", "author": "", "year": "", "publisher": "", "isbn": "", "genres": [], "subjects": []}
+        metadata = next((e for e in opf.iter() if _local_name(e.tag) == "metadata"), None)
+        if metadata is None:
+            return {}
+        values: dict[str, list[str]] = {}
+        for e in metadata:
+            text = " ".join("".join(e.itertext()).split())
+            if text:
+                values.setdefault(_local_name(e.tag), []).append(text)
+        meta["title"] = (values.get("title") or [""])[0]
+        meta["author"] = (values.get("creator") or [""])[0]
+        meta["publisher"] = (values.get("publisher") or [""])[0]
+        date = (values.get("date") or [""])[0]
+        m = re.match(r"\d{4}", date)
+        meta["year"] = m.group(0) if m else ""
+        meta["subjects"] = values.get("subject", [])
+        for ident in values.get("identifier", []):
+            isbn = normalize_isbn(ident)
+            if isbn:
+                meta["isbn"] = isbn
+                break
+        return meta
+    except Exception:
+        return {}
+
+
+def extract_text_epub(path, head_pages, tail_pages, stats=None):
+    if stats is not None:
+        stats["embedded"] = _epub_metadata(path)
     try:
         words = _epub_words(path)
     except Exception as exc:
@@ -371,8 +448,73 @@ def _read_fb2_bytes(path) -> bytes:
         return f.read()
 
 
-def extract_text_fb2(path, head_pages, tail_pages):
+def _fb2_metadata(data: bytes) -> dict:
+    """Жанры, автор, издательство, год и ISBN из description FB2."""
+    meta = {"title": "", "author": "", "year": "", "publisher": "", "isbn": "", "genres": [], "subjects": []}
+    try:
+        try:
+            root = ET.fromstring(data)
+            elems = list(root.iter())
+            name = lambda e: _local_name(e.tag).lower()
+            text = lambda e: " ".join("".join(e.itertext()).split())
+            children = lambda e: list(e)
+        except ET.ParseError:
+            root = BeautifulSoup(data, "html.parser")
+            elems = root.find_all(True)
+            name = lambda e: str(e.name).lower()
+            text = lambda e: " ".join(e.get_text(" ").split())
+            children = lambda e: e.find_all(True, recursive=False)
+
+        parents = {}
+        for e in elems:
+            for c in children(e):
+                parents[id(c)] = e
+
+        def _ancestors(e):
+            out = []
+            while id(e) in parents:
+                e = parents[id(e)]
+                out.append(e)
+            return [name(a) for a in out]
+
+        def in_section(e, section):
+            return section in _ancestors(e)
+
+        def first(section, tag):
+            for e in elems:
+                if name(e) == tag and in_section(e, section):
+                    return e
+            return None
+
+        meta["genres"] = [
+            text(e) for e in elems if name(e) == "genre" and in_section(e, "title-info") and text(e)
+        ]
+        title = first("title-info", "book-title")
+        if title is not None:
+            meta["title"] = text(title)
+        author = first("title-info", "author")
+        if author is not None:
+            parts = []
+            for tag in ("first-name", "middle-name", "last-name"):
+                for c in children(author):
+                    if name(c) == tag and text(c):
+                        parts.append(text(c))
+            meta["author"] = " ".join(parts)
+        for tag in ("publisher", "year", "isbn"):
+            e = first("publish-info", tag)
+            if e is not None:
+                meta[tag] = text(e)
+        m = re.search(r"\d{4}", meta["year"])
+        meta["year"] = m.group(0) if m else ""
+    except Exception:
+        pass
+    return meta
+
+
+def extract_text_fb2(path, head_pages, tail_pages, stats=None):
     data = _read_fb2_bytes(path)
+    if stats is not None:
+        stats["embedded"] = _fb2_metadata(data)
     try:
         root = ET.fromstring(data)
         # <binary> — картинки в base64, в текст их не берём; description нужен ради ISBN и автора

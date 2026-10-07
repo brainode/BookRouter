@@ -32,7 +32,7 @@
 - PDF: `extract_text_pdf`, `_pdf_pages_text`, `perform_ocr_on_page`. DjVu: `extract_text_djvu`, `_djvu_pages_text`, `_run_tool`, `prepare_book_path` (ASCII-копия). EPUB: `extract_text_epub`, `_epub_spine_paths`, `_epub_words`, `_pymupdf_text`. FB2: `extract_text_fb2`, `_read_fb2_bytes`.
 - OCR: `ocr_image`, `_ocr_pages`, `needs_ocr`, `_tail_ocr_needed`.
 - Исключения: `OCRConfigError` (окружение → fatal), `OCRTimeoutError`, `ExtractError` (книга → error_extract).
-- После T43: `ExtractedText` и `extract_book(path, head, tail)` с форматом, числом страниц, флагом OCR и встроенными метаданными (`_fb2_metadata`, `_epub_metadata`).
+- `ExtractedText` (head, tail, fmt, page_count, ocr_used, embedded) и `extract_book(path, head, tail)`; `quality_score(fmt, ocr_used)`; встроенные метаданные: `_fb2_metadata`, `_epub_metadata` (`_epub_opf_path`). Функции форматов принимают `stats`.
 
 ## `llm.py`
 Промпты и `CATEGORY_RULES` берутся из `config` (файлы `prompts/*.txt`).

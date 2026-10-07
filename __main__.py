@@ -27,7 +27,7 @@ from logging_utils import install_print_logging, setup_logging
 from metadata_enricher import MetadataEnricher
 from normalization import extract_first_valid_isbn, is_unknown_label, normalize_isbn, parse_filename_hints
 from preflight import run_preflight
-from reader import OCRConfigError, extract_text_with_ends
+from reader import OCRConfigError, extract_book, quality_score
 from sources import BookSource, cleanup_source, collect_book_sources, materialize_zip_member
 from utils import append_csv, copy_book_to_category, copy_to_errors, file_fingerprint, find_duplicate, long_path, remove_stale_error_copy, source_signature
 
@@ -142,6 +142,12 @@ def _error_result(source: BookSource, index: int, status: str, reason: str, text
         "pub_year": "",
         "publisher": "",
         "edition": "",
+        "book_format": "",
+        "page_count": 0,
+        "has_text_layer": 0,
+        "quality": 0,
+        "fb2_genres": "",
+        "subjects": "",
     }
 
 
@@ -170,8 +176,14 @@ def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, li
     content_hash = ""
     source_size = source_mtime_ns = None
 
+    fmt, page_count, ocr_used, embedded = "", 0, False, {}
+
     def _stage_result(status: str, error: str = "", isbn: str = "", text: str = "") -> dict:
         return {
+            "fmt": fmt,
+            "page_count": page_count,
+            "ocr_used": ocr_used,
+            "embedded": embedded,
             "status": status,
             "index": index,
             "source": source,
@@ -199,10 +211,12 @@ def extract_file_data(index: int, source: BookSource, known_hashes: dict[str, li
         duplicate_path = find_duplicate(io_path, content_hash, known_hashes)
         if duplicate_path:
             return _stage_result("duplicate", duplicate_path)
-        text_head, text_tail = extract_text_with_ends(io_path, MAX_PAGES, MAX_TAIL_PAGES)
+        extracted = extract_book(io_path, MAX_PAGES, MAX_TAIL_PAGES)
+        fmt, page_count, ocr_used, embedded = extracted.fmt, extracted.page_count, extracted.ocr_used, extracted.embedded
+        text_head, text_tail = extracted.head, extracted.tail
         if not (text_head.strip() or text_tail.strip()):
             return _stage_result("error_no_text", "no_text_extracted")
-        isbn = extract_first_valid_isbn(f"{text_head}\n{text_tail}") or ""
+        isbn = extract_first_valid_isbn(f"{text_head}\n{text_tail}") or normalize_isbn(embedded.get("isbn")) or ""
         return _stage_result("ok", isbn=isbn, text=text_head or text_tail)
     except Interrupted:
         return _stage_result("interrupted", "processing_interrupted")
@@ -273,6 +287,12 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             facts = extract_book_facts(text, filename=source.display_name, interrupted_flag=stop_event.is_set())
         if not facts.get("isbn") and raw_isbn:
             facts["isbn"] = raw_isbn
+        embedded = extracted.get("embedded") or {}
+        facts["pub_year"] = embedded.get("year") or facts.get("pub_year", "")
+        facts["publisher"] = embedded.get("publisher") or facts.get("publisher", "")
+        fmt = extracted.get("fmt", "")
+        ocr_used = bool(extracted.get("ocr_used"))
+        no_text = status == "error_no_text"
 
         enriched = enricher.enrich(facts)
         title_final = enriched.get("title", "") or "Неизвестное название"
@@ -329,6 +349,12 @@ def process_file(extracted: dict, enricher: MetadataEnricher, options: RunOption
             "pub_year": facts.get("pub_year", ""),
             "publisher": facts.get("publisher", ""),
             "edition": facts.get("edition", ""),
+            "book_format": fmt,
+            "page_count": extracted.get("page_count", 0),
+            "has_text_layer": 0 if (no_text or ocr_used) else 1,
+            "quality": 0 if no_text else quality_score(fmt, ocr_used),
+            "fb2_genres": ",".join(embedded.get("genres", [])),
+            "subjects": "; ".join(embedded.get("subjects", []))[:500],
         }
 
         io_path = source.materialized_path or source.logical_path
@@ -403,6 +429,10 @@ def iter_extracted_files(sources: list[BookSource], known_hashes: dict[str, list
                     "text": "",
                     "error": str(exc),
                     "content_hash": "",
+                    "fmt": "",
+                    "page_count": 0,
+                    "ocr_used": False,
+                    "embedded": {},
                 }
 
             if extracted is None:
@@ -460,6 +490,12 @@ def _store_result(db: BookDB, result: dict, options: RunOptions) -> int:
         pub_year=result.get("pub_year"),
         publisher=result.get("publisher"),
         edition=result.get("edition"),
+        book_format=result.get("book_format"),
+        page_count=result.get("page_count"),
+        has_text_layer=result.get("has_text_layer"),
+        quality=result.get("quality"),
+        fb2_genres=result.get("fb2_genres"),
+        subjects=result.get("subjects"),
     )
     if result["status"] in ("ok", "duplicate", "needs_review") and previous:
         old_path = previous.get("new_path") or ""

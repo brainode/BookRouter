@@ -19,7 +19,7 @@
 | `export_results(path)` | `results.csv` из БД |
 | `get_cached_metadata`, `upsert_cached_metadata` | кэш провайдеров |
 
-Ключевые колонки `books`: `title`, `author`, `series`, `isbn_norm`, `category` (полный путь через ` | `), `status`, `error_reason`, `new_path` (файл в библиотеке), `content_hash`, `preview_text`, `category_confidence`, `metadata_source`, `category_evidence`, `category_source`, `pub_year`, `publisher`, `edition`.
+Ключевые колонки `books`: `title`, `author`, `series`, `isbn_norm`, `category` (полный путь через ` | `), `status`, `error_reason`, `new_path` (файл в библиотеке), `content_hash`, `preview_text`, `category_confidence`, `metadata_source`, `category_evidence`, `category_source`, `pub_year`, `publisher`, `edition`, `book_format`, `page_count`, `has_text_layer`, `quality`, `fb2_genres`, `subjects` (T43).
 
 Новые таблицы и колонки по задачам: T42/T43 — колонки извлечения и фактов; T47 — `authors`, `author_aliases`, `books.author_id`; T48 — `actions_log`; T50 — `work_key`, `same_as_id`, `work_reviews`; T52 — `golden`. Каждая задача указывает точный SQL.
 
