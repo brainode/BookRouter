@@ -1,6 +1,12 @@
 import pytest
 
-from normalization import extract_first_valid_isbn, normalize_isbn, parse_filename_hints, to_ascii_slug
+from normalization import (
+    extract_first_valid_isbn,
+    normalize_isbn,
+    parse_filename_hints,
+    prefer_filename_title,
+    to_ascii_slug,
+)
 
 
 @pytest.mark.parametrize(
@@ -53,3 +59,17 @@ def test_to_ascii_slug():
 )
 def test_parse_filename_hints(filename, title, author, series):
     assert parse_filename_hints(filename) == {"title": title, "author": author, "series": series}
+
+
+@pytest.mark.parametrize(
+    "title,author,filename,expected",
+    [
+        ("Мои первые книжки", "Корнеи Чуковский", "Федорино горе - Корнеи Чуковский.djvu", ("Федорино горе", True)),
+        ("ДЛЯ МАЛЕНЬКИХ", "Н. НОСОВ", "Заплатка - Н. НОСОВ.djvu", ("Заплатка", True)),
+        ("Незнайка на Луне", "Николай Носов", "Незнайка на Луне - Николай Носов.djvu", ("Незнайка на Луне", False)),
+        ("The Great Gatsby", "F. Scott Fitzgerald", "Analysis of the provided text - GPT-3 (3).pdf", ("The Great Gatsby", False)),
+        ("Fluid Mechanics", "L. D. Landau", "Landau_Lifshitz_(vol.06).djv", ("Fluid Mechanics", False)),
+    ],
+)
+def test_prefer_filename_title(title, author, filename, expected):
+    assert prefer_filename_title(title, author, filename) == expected

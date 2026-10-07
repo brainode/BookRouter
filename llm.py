@@ -36,6 +36,7 @@ from normalization import (
     is_unknown_label,
     normalize_spaces,
     parse_filename_hints,
+    prefer_filename_title,
     to_ascii_slug,
 )
 
@@ -264,6 +265,10 @@ def extract_book_facts(text: str, filename: str = "", interrupted_flag: bool | N
     if not author or is_unknown_label(author):
         author = file_hints["author"]
         confidence = min(confidence, 0.55)
+
+    title, from_filename = prefer_filename_title(title, author, filename)
+    if from_filename:
+        confidence = min(confidence, 0.7)
 
     isbn_from_text = extract_first_valid_isbn(isbn or excerpt)
     if isbn_from_text:

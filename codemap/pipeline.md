@@ -44,7 +44,7 @@
 - `build_category_path(category, author, series)` — для `Художественные | Жанр` добавляет `author-slug | series-slug`.
 
 ## `normalization.py`
-`normalize_spaces`, `is_unknown_label`, `to_ascii_slug` (кириллица → латиница), `canonical_author_name` (без отчеств/средних инициалов), `token_key` (без порядка слов), `normalize_for_match`, ISBN: `normalize_isbn`, `extract_isbn_candidates`, `extract_first_valid_isbn`. Имя файла: `parse_filename_hints` → `{title, author, series}`.
+`normalize_spaces`, `is_unknown_label`, `to_ascii_slug` (кириллица → латиница), `canonical_author_name` (без отчеств/средних инициалов), `token_key` (без порядка слов), `normalize_for_match`, ISBN: `normalize_isbn`, `extract_isbn_candidates`, `extract_first_valid_isbn`. Имя файла: `parse_filename_hints` → `{title, author, series}`; `prefer_filename_title(title, author, filename)` → `(title, from_filename)`.
 
 ## `metadata_enricher.py`, `providers/`
 `MetadataEnricher.enrich(facts)`: ISBN → `_lookup_isbn`, иначе `_lookup_title_author`; кэш `metadata_cache` (`_cache_get/_cache_set`); `_merge` — внешние данные заполняют только пустые title/author, ISBN/серию перекрывают. Провайдеры: `providers/openlibrary.py`, `providers/google_books.py`, база и скоринг — `providers/base.py` (`ProviderResult`, `score_candidate`, `best_candidate`).

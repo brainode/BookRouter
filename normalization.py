@@ -277,3 +277,27 @@ def parse_filename_hints(filename: str) -> dict[str, str]:
     title = title or "Неизвестное название"
     author = author or "Неизвестный автор"
     return {"title": title, "author": author, "series": series}
+
+
+def _name_tokens(name: str) -> set[str]:
+    return {t for t in to_ascii_slug(canonical_author_name(name), fallback="").split("-") if len(t) > 2}
+
+
+def _title_words(title: str) -> set[str]:
+    return {w for w in re.findall(r"\w+", normalize_spaces(title).lower()) if len(w) > 2}
+
+
+def prefer_filename_title(title: str, author: str, filename: str) -> tuple[str, bool]:
+    """Название из имени файла вместо найденного в тексте, если файл назван «Название - Автор»,
+    автор совпадает, а названия почти не пересекаются (серия с обложки, мусор OCR)."""
+    hints = parse_filename_hints(filename)
+    if is_unknown_label(hints["title"]) or is_unknown_label(hints["author"]):
+        return title, False
+    if not _name_tokens(hints["author"]) & _name_tokens(author):
+        return title, False
+    file_words = _title_words(hints["title"])
+    if not file_words:
+        return title, False
+    if len(file_words & _title_words(title)) / len(file_words) >= 0.5:
+        return title, False
+    return hints["title"], True
